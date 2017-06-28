@@ -3,6 +3,8 @@ use warnings FATAL => 'all';
 
 package MarpaX::ESLIF::XML::XML10;
 use MarpaX::ESLIF;
+use MarpaX::ESLIF::XML::RecognizerInterface;
+use MarpaX::ESLIF::XML::ValueInterface;
 
 # ABSTRACT: XML 1.1 suite using MarpaX::ESLIF
 
@@ -33,6 +35,46 @@ sub new {
          grammar => MarpaX::ESLIF::Grammar->new(MarpaX::ESLIF->new($options{logger}), $_BNF),
          %options
         }, $pkg
+}
+
+sub parse {
+    my ($self, $data) = @_;
+
+    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(%{$self->{options}}, data => $data);
+    my $valueInterface      = MarpaX::ESLIF::XML::ValueInterface->new(%{$self->{options}});
+
+    if (1) {
+        my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new($self->{grammar}, $recognizerInterface);
+        $eslifRecognizer->scan() || die "scan() failed";
+        $self->_manage_events($eslifRecognizer, $data);
+        if ($eslifRecognizer->isCanContinue) {
+            do {
+                $eslifRecognizer->resume || die "resume() failed";
+                $self->_manage_events($eslifRecognizer, $data)
+            } while ($eslifRecognizer->isCanContinue)
+        }
+        #
+        # We configured value interface to not accept ambiguity not null parse.
+        # So no need to loop on value()
+        #
+        MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value()
+    } else {    
+        $self->{grammar}->parse($recognizerInterface, $valueInterface);
+    }
+}
+
+sub _manage_events {
+  my ($self, $eslifRecognizer, $data) = @_;
+
+  foreach (@{$eslifRecognizer->events()}) {
+    my $event = $_->{event};
+    next unless $event;  # Can be undef for exhaustion
+    if ($event eq 'CData$') {
+        my ($offset, $length) = $eslifRecognizer->lastCompletedLocation('CData');
+        my $CData = substr($data, $offset, $length);
+        print STDERR "==> CDATA offset $offset length $length: $CData\n";
+    }
+  }
 }
 
 1;
@@ -77,7 +119,8 @@ PubidChar02   ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-()+,./:=?;!*#@$_%]  # PubidChar02 
 # Character Data
 # --------------
 CharData      ::= CHARSDATA - CHARSDATA_EXCEPTION   # Take care, rewriting it as an exception removed its nullable aspect
-CharData      ::=                                   # So here is the nullable
+                                                    # BUT this is an error in the original spec: CharData should NOT be
+                                                    # nullable, c.f. http://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0004.html
 #
 # Comment
 # -------
@@ -93,8 +136,13 @@ PITarget      ::= PINAME - PINAME_EXCEPTION                   # Note that a PITa
 # --------------
 CDSect        ::= CDStart CData CDEnd
 CDStart       ::= '<![CDATA['
-CData         ::= CDATACHARS - CDATACHARS_EXCEPTION           # Take care, writing that as an exception removed its nullable aspect
-CData         ::=                                             # So here is the nullable
+#          ]] followed by CHAR but >, or
+#          ]  followed by CHAR but ], or
+# CHAR but ]
+CDataInterior ::= /(?:\]\][\x{9}\x{A}\x{D}\x{20}-\x{3D}\x{3F}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}])|(?:\][\x{9}\x{A}\x{D}\x{20}-\x{5C}\x{5E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}])|(?:[\x{9}\x{A}\x{D}\x{20}-\x{5C}\x{5E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}])/u
+event CData$  = completed  CData
+CData         ::= CDataInterior*
+
 CDEnd         ::= ']]>'
 #
 # Prolog
@@ -216,13 +264,29 @@ DefaultDecl  ::= '#REQUIRED'
 #
 # Conditional Section
 # -------------------
+#
+# Originally, ignore section is:
+#
+# [63]          ignoreSect         ::= '<![' S? 'IGNORE' S? '[' ignoreSectContents* ']]>'
+# [64]          ignoreSectContents ::= Ignore ('<![' ignoreSectContents ']]>' Ignore)*
+#
+# Ignore is nullable, ignoreSectContents is nullable, and ignoreSect uses ignoreSectContents*.
+# But Marpa does not like at all nullables that are in the RHS of a sequence. So we make ignoreSectContents not nullable, and insert a new rule, i.e.:
+#
+# [63]          ignoreSect         ::= '<![' S? 'IGNORE' S? '[' ignoreSectContents* ']]>'
+# [63bis]       ignoreSect         ::= '<![' S? 'IGNORE' S? '['                     ']]>'
+# [64]          ignoreSectContents ::= Ignore ('<![' ignoreSectContents ']]>' Ignore)+
+# 
 conditionalSect ::= includeSect
                   | ignoreSect
 includeSect     ::= '<![' S_maybe 'INCLUDE' S_maybe '[' extSubsetDecl ']]>'
 ignoreSect      ::= '<![' S_maybe 'IGNORE' S_maybe '[' ignoreSectContents_any ']]>'
-ignoreSectContents ::= Ignore ignoreSectContentsInterior_any
-Ignore          ::= IGNORECHARS - IGNORECHARS_EXCEPTION                    # Take care, writing that as an exception removed its nullable aspect
-Ignore          ::=                                                        # So here is the nullable
+                  | '<![' S_maybe 'IGNORE' S_maybe '['                        ']]>'
+ignoreSectContents ::= Ignore ignoreSectContentsInterior_many
+Ignore          ::= IGNORECHARS - IGNORECHARS_EXCEPTION
+Ignore          ::=
+
+
 #
 # Character Reference
 # -------------------
@@ -236,6 +300,50 @@ Reference       ::= EntityRef
 EntityRef       ::= '&' Name ';'
 PEReference     ::= '%' Name ';'
 
+#
+# Entity Declaration
+# ------------------
+EntityDecl      ::= GEDecl
+                  | PEDecl
+GEDecl          ::= '<!ENTITY' S Name S EntityDef S_maybe '>'
+PEDecl          ::= '<!ENTITY' S '%' S Name S PEDef S_maybe '>'
+EntityDef       ::= EntityValue
+                  | ExternalID
+                  | ExternalID NDataDecl
+PEDef           ::= EntityValue
+                  | ExternalID 
+
+#
+# External Entity Declaration
+# ---------------------------
+ExternalID      ::= 'SYSTEM' S SystemLiteral
+                  | 'PUBLIC' S PubidLiteral S SystemLiteral
+NDataDecl       ::= S 'NDATA' S Name 
+
+#
+# Text Declaration
+# ----------------
+TextDecl        ::= '<?xml'             EncodingDecl S_maybe '?>'
+                  | '<?xml' VersionInfo EncodingDecl S_maybe '?>'
+#
+# Well-Formed External Parsed Entity
+# ----------------------------------
+extParsedEnt    ::= TextDecl content 
+                  |          content 
+
+#
+# Encoding Declaration
+# --------------------
+EncodingDecl    ::= S 'encoding' Eq '"' EncName '"'
+                  | S 'encoding' Eq "'" EncName "'"
+EncName         ::= /[A-Za-z][A-Za-z0-9._-]*/
+
+#
+# Notation Declarations
+# ---------------------
+NotationDecl    ::= '<!NOTATION' S Name S ExternalID S_maybe '>'
+                  | '<!NOTATION' S Name S PublicID   S_maybe '>'
+PublicID        ::= 'PUBLIC' S PubidLiteral 
 #
 # Grammar helpers following ESLIF spec
 #
@@ -267,8 +375,7 @@ CommentChar                 ::= [\x{9}\x{A}\x{D}\x{20}-\x{2c}\x{2e}-\x{D7FF}\x{E
 CommentCharInterior         ::= CommentChar
                               | '-' CommentChar
 CommentCharInterior_any     ::= CommentCharInterior*
-PICharsInterior             ::= PICHARS - PICHARS_EXCEPTION  # Take care, writing that as an exception removed its nullable apsect
-PICharsInterior             ::=                              # So here is the nullable
+PICharsInterior             ::= PICHAR*
 S_maybe                     ::= S
 S_maybe                     ::=
 XMLDecl_maybe               ::= XMLDecl
@@ -317,8 +424,8 @@ NotationTypeInterior_any    ::= NotationTypeInterior*
 EnumerationInterior         ::= S_maybe '|' S_maybe Nmtoken
 EnumerationInterior_any     ::= EnumerationInterior*
 ignoreSectContentsInterior  ::= '<![' ignoreSectContents ']]>' Ignore
-ignoreSectContentsInterior_any  ::= ignoreSectContentsInterior*
-ignoreSectContents_any      ::= ignoreSectContents*
+ignoreSectContentsInterior_many  ::= ignoreSectContentsInterior+
+ignoreSectContents_any     ::= ignoreSectContents*
 #
 # Some lexemes for convenience
 # -----------------------------
@@ -332,10 +439,9 @@ _CHARSDATA                    ~ [^<&]*
 # CHAR is shared as an exception with PICharsInterior CDATACharsInterior
 #
 CHAR                          ~ _CHAR
-PICHARS                       ~ _CHAR_any
-PICHARS_EXCEPTION             ~ _CHAR_any '?>' _CHAR_any
+PICHAR                        ~ /(?:\?[\x{9}\x{A}\x{D}\x{20}-\x{3D}\x{3F}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]|[\x{9}\x{A}\x{D}\x{20}-\x{3E}\x{40}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}])/u
 _CHAR                         ~ [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u /* any Unicode character, excluding the surrogate blocks, FFFE, and FFFF. */
-_CHAR_any                     ~ _CHAR
+_CHAR_any                     ~ _CHAR*
 #
 # NAME is shared as an exception PITarget
 #
@@ -351,8 +457,9 @@ _NAME                         ~ _NAMESTARTCHAR _NAMECHAR_any
 PINAME                        ~ _NAME
 PINAME_EXCEPTION              ~ 'xml':i
 
-CDATACHARS                    ~ _CHAR_any
-CDATACHARS_EXCEPTION          ~ _CHAR_any ']]>' _CHAR_any
+# The CDATA content using an exception would be:
+#CDATACHARS                    ~ _CHAR_any
+#CDATACHARS_EXCEPTION          ~ _CHAR_any ']]>' _CHAR_any
 
 IGNORECHARS                   ~ _CHAR_any
 IGNORECHARS_EXCEPTION         ~ _CHAR_any '<![' _CHAR_any

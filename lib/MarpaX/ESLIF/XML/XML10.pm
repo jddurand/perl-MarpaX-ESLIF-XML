@@ -136,11 +136,14 @@ PITarget      ::= PINAME - PINAME_EXCEPTION                   # Note that a PITa
 # --------------
 CDSect        ::= CDStart CData CDEnd
 CDStart       ::= '<![CDATA['
+# A CDATA character sequence is:
 #          ]] followed by CHAR but >, or
 #          ]  followed by CHAR but ], or
 # CHAR but ]
-CDataInterior ::= /(?:\]\][\x{9}\x{A}\x{D}\x{20}-\x{3D}\x{3F}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}])|(?:\][\x{9}\x{A}\x{D}\x{20}-\x{5C}\x{5E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}])|(?:[\x{9}\x{A}\x{D}\x{20}-\x{5C}\x{5E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}])/u
-event CData$  = completed  CData
+event CData$  = completed  CData /* For debug */
+CDataInterior ::= ']]' CHAR_MINUS_GT
+                | ']'  CHAR_MINUS_RBRACKET
+                |      CHAR_MINUS_RBRACKET
 CData         ::= CDataInterior*
 
 CDEnd         ::= ']]>'
@@ -464,3 +467,5 @@ PINAME_EXCEPTION              ~ 'xml':i
 IGNORECHARS                   ~ _CHAR_any
 IGNORECHARS_EXCEPTION         ~ _CHAR_any '<![' _CHAR_any
                               | _CHAR_any ']]>' _CHAR_any
+CHAR_MINUS_GT                 ~ [\x{9}\x{A}\x{D}\x{20}-\x{3D}\x{3F}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u /* '>' is 0x3E */
+CHAR_MINUS_RBRACKET           ~ [\x{9}\x{A}\x{D}\x{20}-\x{5C}\x{5E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u /* ']' is 0x5D */

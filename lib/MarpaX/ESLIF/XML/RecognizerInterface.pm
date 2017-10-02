@@ -70,7 +70,7 @@ Returns a true or a false value, indicating if end-of-data is reached. Default i
 
 =cut
 
-sub isEof                  {        $_[0]->{pos} > length($_[0]->{data}) } # ../. and we will say this is EOF
+sub isEof                  {        $_[0]->{pos} > bytes::length($_[0]->{data}) } # ../. and we will say this is EOF
 
 =head3 isCharacterStream($self)
 
@@ -94,7 +94,7 @@ Returns last bunch of data. Default is the string passed in the constructor.
 
 =cut
 
-sub data                   { substr($_[0]->{data}, $_[0]->{pos}++, 1) } # Data itself
+sub data                   { bytes::substr($_[0]->{data}, $_[0]->{pos}++, 1) } # Data itself
 
 =head3 isWithDisableThreshold($self)
 

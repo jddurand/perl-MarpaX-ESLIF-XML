@@ -5,7 +5,7 @@ package MarpaX::ESLIF::XML::XML10;
 use Carp qw/croak/;
 use Data::Section -setup;
 use I18N::Charset qw/iana_charset_name/;
-use Log::Any qw/$log/;
+use Log::Any '$log', filter => \&_log_filter;
 use MarpaX::ESLIF;
 use MarpaX::ESLIF::XML::RecognizerInterface;
 use MarpaX::ESLIF::XML::ValueInterface::BOM;
@@ -58,9 +58,17 @@ sub new {
     }, $class
 }
 
+sub _log_filter {
+    my ($category, $level, $msg) = @_;
+
+    return if $MarpaX::Logger::XML::Logger::Silent;
+    return $msg;
+}
+
 sub _charset_from_bom {
     my ($self) = @_;
 
+    local $MarpaX::Logger::XML::Logger::Silent = 1;
     my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(reader => $self->{reader}, remember => 1, exhaustion => 1);
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::BOM->new();
 
@@ -81,13 +89,13 @@ sub _charset_from_bom {
         return ($charset, $bookkeeping)
     }
 
-    return (undef, undef)
+    return (undef, $recognizerInterface->bookkeeping())
 }
 
 sub _iana_charset {
     my ($self, $encoding) = @_;
 
-    croak "Encoding in undef" unless defined($encoding);
+    return undef unless defined($encoding);
     my $charset = iana_charset_name($encoding) || croak "Failed to get charset name from $encoding";
 
     return $charset
@@ -96,6 +104,7 @@ sub _iana_charset {
 sub _charset_from_guess {
     my ($self, $prev_bookkeeping) = @_;
 
+    local $MarpaX::Logger::XML::Logger::Silent = 1;
     my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(reader => $self->{reader}, remember => 1, exhaustion => 1, prev_bookkeeping => $prev_bookkeeping);
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Guess->new();
 
@@ -112,12 +121,13 @@ sub _charset_from_guess {
         return ($charset, $bookkeeping)
     }
 
-    return (undef, undef)
+    return (undef, $recognizerInterface->bookkeeping())
 }
 
 sub _charset_from_decl {
     my ($self, $prev_bookkeeping, $encoding) = @_;
 
+    local $MarpaX::Logger::XML::Logger::Silent = 1;
     my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(reader => $self->{reader}, remember => 1, exhaustion => 1, prev_bookkeeping => $prev_bookkeeping, isCharacterStream => 1, encoding => $encoding);
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Decl->new();
 
@@ -129,12 +139,12 @@ sub _charset_from_decl {
         my $bookkeeping = $recognizerInterface->bookkeeping();
         my $charset = $self->_iana_charset($encoding);
 
-        $log->infof("Encoding from declaration: %s <=> Charset %s, bookkeeping: %d bytes", $encoding, $charset, length($bookkeeping));
+        $log->debugf("Encoding from declaration: %s <=> Charset %s, bookkeeping: %d bytes", $encoding, $charset, length($bookkeeping));
 
         return ($charset, $bookkeeping)
     }
 
-    return (undef, undef)
+    return (undef, $recognizerInterface->bookkeeping())
 }
 
 sub parse {
@@ -204,7 +214,7 @@ sub parse {
         }
     }
 
-    $log->infof("Charset used: %s", $encoding);
+    $log->debugf("Charset used: %s", $encoding);
     #
     # XML itself
     #

@@ -1,9 +1,9 @@
 use strict;
 use warnings FATAL => 'all';
 
-package MarpaX::ESLIF::XML::ValueInterface;
+package MarpaX::ESLIF::XML::ValueInterface::Decl;
 
-# ABSTRACT: MarpaX::ESLIF::XML Value Interface
+# ABSTRACT: MarpaX::ESLIF::XML Value Interface for XML Declaration
 
 # VERSION
 
@@ -11,13 +11,13 @@ package MarpaX::ESLIF::XML::ValueInterface;
 
 =head1 DESCRIPTION
 
-MarpaX::ESLIF::XML's Value Interface
+MarpaX::ESLIF::XML's Value Interface for XML Declaration
 
 =head1 SYNOPSIS
 
-    use MarpaX::ESLIF::XML::ValueInterface;
+    use MarpaX::ESLIF::XML::ValueInterface::Decl;
 
-    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
+    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Decl->new();
 
 =cut
 

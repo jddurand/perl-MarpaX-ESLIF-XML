@@ -1,9 +1,9 @@
 use strict;
 use warnings FATAL => 'all';
 
-package MarpaX::ESLIF::XML::ValueInterface;
+package MarpaX::ESLIF::XML::ValueInterface::Guess;
 
-# ABSTRACT: MarpaX::ESLIF::XML Value Interface
+# ABSTRACT: MarpaX::ESLIF::XML Value Interface for Guess
 
 # VERSION
 
@@ -11,13 +11,13 @@ package MarpaX::ESLIF::XML::ValueInterface;
 
 =head1 DESCRIPTION
 
-MarpaX::ESLIF::XML's Value Interface
+MarpaX::ESLIF::XML's Value Interface for Guess
 
 =head1 SYNOPSIS
 
-    use MarpaX::ESLIF::XML::ValueInterface;
+    use MarpaX::ESLIF::XML::ValueInterface::Guess;
 
-    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
+    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Guess->new();
 
 =cut
 
@@ -117,6 +117,66 @@ sub setResult {
     my ($self) = @_;
 
     return $self->{result} = $_[1]
+}
+
+=head3 UTF_32BE($self)
+
+UTF_32BE action. Returns the array reference [ 'UTF-32BE', 4].
+
+=cut
+
+sub UTF_32BE {
+    return [ 'UTF-32BE', 4 ]
+}
+
+=head3 UTF_32LE($self)
+
+UTF_32LE action. Returns the array reference [ 'UTF-32LE', 4 ].
+
+=cut
+
+sub UTF_32LE {
+    return [ 'UTF-32LE', 4 ]
+}
+
+=head3 UTF_16BE($self)
+
+UTF_16BE action. Returns the array reference [ 'UTF-16BE', 4 ].
+
+=cut
+
+sub UTF_16BE {
+    return [ 'UTF-16BE', 4 ]
+}
+
+=head3 UTF_16LE($self)
+
+UTF_16LE action. Returns the array reference [ 'UTF-16LE', 4 ].
+
+=cut
+
+sub UTF_16LE {
+    return [ 'UTF-16LE', 4 ]
+}
+
+=head3 UTF_8($self)
+
+UTF_8 action. Returns the array reference [ 'UTF-8', 4 ].
+
+=cut
+
+sub UTF_8 {
+    return [ 'UTF-8', 4 ]
+}
+
+=head3 EBCDIC($self)
+
+EBCDIC action. Returns the array reference [ 'EBCDIC', 4 ].
+
+=cut
+
+sub EBCDIC {
+    return [ 'EBCDIC', 4 ]
 }
 
 =head1 SEE ALSO

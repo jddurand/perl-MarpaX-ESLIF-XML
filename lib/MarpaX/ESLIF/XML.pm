@@ -2,8 +2,7 @@ use strict;
 use warnings FATAL => 'all';
 
 package MarpaX::ESLIF::XML;
-use MarpaX::ESLIF::XML::XML10;
-use MarpaX::ESLIF::XML::XML11;
+use Carp qw/croak/;
 
 # ABSTRACT: XML suite using MarpaX::ESLIF
 
@@ -13,16 +12,33 @@ use MarpaX::ESLIF::XML::XML11;
 
 =head1 DESCRIPTION
 
-This module is the top fron-end to XML suite using L<MarpaX::ESLIF>.
+This module is the top front-end to XML suite using L<MarpaX::ESLIF>.
 
 =head1 SYNOPSIS
 
     use MarpaX::ESLIF::XML;
 
-    my $eslifxml  = MarpaX::ESLIF::XML->new();
-    my $input     = '<?xml></xml>';
-    my $xmlhash   = $eslifxml->parse($input);
+    #
+    # $reader must be an object that support the read() and close() methods.
+    # MarpaX::ESLIF::XML::Reader provides subclasses for the major
+    # types of input.
+    #
+    my $eslifxml  = MarpaX::ESLIF::XML->new(logger => $logger, reader => $reader);
+    my $xmlhash   = $eslifxml->parse();
 
 =cut
+
+sub new {
+    my ($pkg, %options) = @_;
+
+    my $logger = delete($options{logger});
+    my $eslif = MarpaX::ESLIF->new($logger); # This is a multiton
+
+    return bless {
+        grammar_xmldecl => MarpaX::ESLIF::Grammar->new($eslif, $XMLDecl),
+        grammar         => MarpaX::ESLIF::Grammar->new($eslif, $XML),
+        %options
+    }, $pkg
+}
 
 1;

@@ -2,10 +2,17 @@ use strict;
 use warnings FATAL => 'all';
 
 package MarpaX::ESLIF::XML::XML10;
+use Carp qw/croak/;
+use Data::Section -setup;
+use I18N::Charset qw/iana_charset_name/;
+use Log::Any qw/$log/;
 use MarpaX::ESLIF;
 use MarpaX::ESLIF::XML::RecognizerInterface;
+use MarpaX::ESLIF::XML::ValueInterface::BOM;
+use MarpaX::ESLIF::XML::ValueInterface::Decl;
+use MarpaX::ESLIF::XML::ValueInterface::Guess;
 use MarpaX::ESLIF::XML::ValueInterface;
-use Data::Section -setup;
+use Safe::Isa;
 
 # ABSTRACT: XML 1.0 parser
 
@@ -27,85 +34,226 @@ XML 1.0 parser.
 
 =cut
 
-my $XMLDecl = ${__PACKAGE__->section_data('XMLDecl')};
-my $XML     = ${__PACKAGE__->section_data('XML')};
+my $ESLIF         = MarpaX::ESLIF->new($log);
+
+my $BOM_SOURCE    = ${__PACKAGE__->section_data('BOM')};
+my $BOM_GRAMMAR   = MarpaX::ESLIF::Grammar->new($ESLIF, $BOM_SOURCE);
+
+my $GUESS_SOURCE  = ${__PACKAGE__->section_data('Guess')};
+my $GUESS_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $GUESS_SOURCE);
+
+my $XML10_SOURCE  = ${__PACKAGE__->section_data('XML 1.0')};
+my $XML10_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $XML10_SOURCE);
+
+my $DECL_SOURCE   = ":start ::= XMLDecl\n$XML10_SOURCE";
+$DECL_SOURCE      =~ s/## Decl_//g; # Enable specific decl actions
+my $DECL_GRAMMAR  = MarpaX::ESLIF::Grammar->new($ESLIF, $DECL_SOURCE);
 
 sub new {
-    my ($pkg, %options) = @_;
-
-    my $logger = delete($options{logger});
-    my $eslif = delete($options{eslif}) // MarpaX::ESLIF->new($logger);
+    my ($class, %options) = @_;
 
     return bless {
-        grammar_xmldecl => MarpaX::ESLIF::Grammar->new($eslif, $XMLDecl),
-        grammar         => MarpaX::ESLIF::Grammar->new($eslif, $XML),
-        %options
-    }, $pkg
+        reader   => $options{reader},
+        encoding => $options{encoding}
+    }, $class
+}
+
+sub _charset_from_bom {
+    my ($self) = @_;
+
+    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(reader => $self->{reader}, remember => 1, exhaustion => 1);
+    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::BOM->new();
+
+    if ($BOM_GRAMMAR->parse($recognizerInterface, $valueInterface)) {
+        my ($encoding, $bytes) = @{$valueInterface->getResult};
+        #
+        # Get data that has to be reinjected
+        #
+        my $bookkeeping = $recognizerInterface->bookkeeping();
+        #
+        # ... Minus the number of bytes used by the BOM
+        #
+        substr($bookkeeping, 0, $bytes, '');
+        my $charset = $self->_iana_charset($encoding);
+
+        $log->debugf("Encoding from BOM: %s <=> Charset %s using %d bytes, bookkeeping: %d bytes", $encoding, $charset, $bytes, length($bookkeeping));
+
+        return ($charset, $bookkeeping)
+    }
+
+    return (undef, undef)
+}
+
+sub _iana_charset {
+    my ($self, $encoding) = @_;
+
+    croak "Encoding in undef" unless defined($encoding);
+    my $charset = iana_charset_name($encoding) || croak "Failed to get charset name from $encoding";
+
+    return $charset
+}
+
+sub _charset_from_guess {
+    my ($self, $prev_bookkeeping) = @_;
+
+    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(reader => $self->{reader}, remember => 1, exhaustion => 1, prev_bookkeeping => $prev_bookkeeping);
+    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Guess->new();
+
+    if ($GUESS_GRAMMAR->parse($recognizerInterface, $valueInterface)) {
+        my ($encoding, $bytes) = @{$valueInterface->getResult};
+        #
+        # Get data that has to be reinjected
+        #
+        my $bookkeeping = $recognizerInterface->bookkeeping();
+        my $charset = $self->_iana_charset($encoding);
+
+        $log->debugf("Encoding from guess: %s <=> Charset %s using %d bytes, bookkeeping: %d bytes", $encoding, $charset, $bytes, length($bookkeeping));
+
+        return ($charset, $bookkeeping)
+    }
+
+    return (undef, undef)
+}
+
+sub _charset_from_decl {
+    my ($self, $prev_bookkeeping, $encoding) = @_;
+
+    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(reader => $self->{reader}, remember => 1, exhaustion => 1, prev_bookkeeping => $prev_bookkeeping, isCharacterStream => 1, encoding => $encoding);
+    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Decl->new();
+
+    if ($DECL_GRAMMAR->parse($recognizerInterface, $valueInterface)) {
+        my $encoding = $valueInterface->getResult;
+        #
+        # Get data that has to be reinjected
+        #
+        my $bookkeeping = $recognizerInterface->bookkeeping();
+        my $charset = $self->_iana_charset($encoding);
+
+        $log->infof("Encoding from declaration: %s <=> Charset %s, bookkeeping: %d bytes", $encoding, $charset, length($bookkeeping));
+
+        return ($charset, $bookkeeping)
+    }
+
+    return (undef, undef)
 }
 
 sub parse {
-    my ($self, $data, $encoding) = @_;
+    my ($self) = @_;
 
-    if (! defined($encoding)) {
-        #
-        # If encoding is not given by the caller, we want to determine it ourself
-        # before the parse is starting. This may fail.
-        #
-    }
+    my ($charset_from_bom, $charset_from_guess, $charset_from_decl, $bookkeeping);
+    #
+    # Get encoding from BOM
+    #
+    ($charset_from_bom, $bookkeeping) = $self->_charset_from_bom;
+    #
+    # Guess encoding from first bytes
+    #
+    ($charset_from_guess, $bookkeeping) = $self->_charset_from_guess($bookkeeping);
+    #
+    # Guess encoding from declaration, this implies charset recognition from MarpaX::ESLIF if no encoding came from BOM or guess
+    #
+    ($charset_from_decl, $bookkeeping) = $self->_charset_from_decl($bookkeeping, $charset_from_bom // $charset_from_guess);
+    #
+    # We apply the algorithm "Raw XML charset encoding detection" as per rometools
+    # https://rometools.github.io/rome/RssAndAtOMUtilitiEsROMEV0.5AndAboveTutorialsAndArticles/XMLCharsetEncodingDetectionHowRssAndAtOMUtilitiEsROMEHelpsGettingTheRightCharsetEncoding.html
+    #
     my $encoding;
-    my $can_again = 1;
-  again:
-    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(%{$self->{options}}, data => $data, encoding => $encoding);
-    my $valueInterface      = MarpaX::ESLIF::XML::ValueInterface->new(%{$self->{options}});
+    $log->debugf("Charset from BOM: %s, Guess: %s, Declaration: %s", $charset_from_bom, $charset_from_guess, $charset_from_decl);
 
-    if (1) {
-        my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new($self->{grammar}, $recognizerInterface);
-        $eslifRecognizer->scan() || die "scan() failed";
-        $self->_manage_events($eslifRecognizer, $data, \$encoding);
-        if ($can_again && defined($encoding)) {
-            # print STDERR "==> Using encoding: " . ($encoding // '<undef>') . "\n";
-            $can_again = 0;
-            goto again;
+    if (! defined($charset_from_bom)) {
+        if (! defined($charset_from_guess) || ! defined($charset_from_decl)) {
+            $encoding = 'UTF-8';
+        } else {
+            if (($charset_from_decl eq 'UTF-16') && ($charset_from_guess eq 'UTF-16BE' || $charset_from_guess eq 'UTF-16LE')) {
+                $encoding =  $charset_from_guess;
+            } elsif (($charset_from_decl eq 'UTF-32') && ($charset_from_guess eq 'UTF-32BE' || $charset_from_guess eq 'UTF-32LE')) {
+                $encoding =  $charset_from_guess;
+            } else {
+                $encoding = $charset_from_decl;
+            }
         }
-        if ($eslifRecognizer->isCanContinue) {
-            do {
-                $eslifRecognizer->resume || die "resume() failed";
-                $self->_manage_events($eslifRecognizer, $data, \$encoding);
-                    if ($can_again && defined($encoding)) {
-                        $can_again = 0;
-                        goto again;
+    } else {
+        if ($charset_from_bom eq 'UTF-8') {
+            if (defined($charset_from_guess) && $charset_from_guess ne 'UTF-8') {
+                croak "Encoding mismatch between BOM $charset_from_bom and guess $charset_from_guess";
+            }
+            if (defined($charset_from_decl) && $charset_from_decl ne 'UTF-8') {
+                croak "Encoding mismatch between BOM $charset_from_bom and declaration $charset_from_decl";
+            }
+            $encoding = 'UTF-8';
+        } else {
+            if ($charset_from_bom eq 'UTF-16BE' or $charset_from_bom eq 'UTF-16LE') {
+                if (defined($charset_from_guess) && $charset_from_guess ne $charset_from_bom) {
+                    croak "Encoding mismatch between BOM $charset_from_bom and guess $charset_from_guess";
                 }
-            } while ($eslifRecognizer->isCanContinue)
+                if (defined($charset_from_decl) && ($charset_from_decl ne 'UTF-16' and $charset_from_decl ne $charset_from_bom)) {
+                    croak "Encoding mismatch between BOM $charset_from_bom and declaration $charset_from_decl";
+                }
+                $encoding = $charset_from_bom;
+            } elsif ($charset_from_bom eq 'UTF-32BE' or $charset_from_bom eq 'UTF-32LE') {
+                if (defined($charset_from_guess) && $charset_from_guess ne $charset_from_bom) {
+                    croak "Encoding mismatch between BOM $charset_from_bom and guess $charset_from_guess";
+                }
+                if (defined($charset_from_decl) && ($charset_from_decl ne 'UTF-32' and $charset_from_decl ne $charset_from_bom)) {
+                    croak "Encoding mismatch between BOM $charset_from_bom and declaration $charset_from_decl";
+                }
+                $encoding = $charset_from_bom;
+            } else {
+                croak 'Encoding setup failed';
+            }
         }
-        #
-        # We configured value interface to not accept ambiguity not null parse.
-        # So no need to loop on value()
-        #
-        MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value()
-    } else {    
-        $self->{grammar}->parse($recognizerInterface, $valueInterface);
     }
+
+    $log->infof("Charset used: %s", $encoding);
+    #
+    # XML itself
+    #
+    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(reader => $self->{reader}, prev_bookkeeping => $bookkeeping, encoding => $encoding, newline => 1);
+    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
+    my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new($XML10_GRAMMAR, $recognizerInterface);
+    #
+    # We ask for initial events - this must be explicit
+    #
+    if ($eslifRecognizer->scan()) {
+        $self->_manage_events($eslifRecognizer, $recognizerInterface);
+        while ($eslifRecognizer->isCanContinue) {
+            last unless $eslifRecognizer->resume;
+            $self->_manage_events($eslifRecognizer, $recognizerInterface);
+        }
+    }
+
+    return MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value()
 }
 
 sub _manage_events {
-    my ($self, $eslifRecognizer, $data, $encoding_ref) = @_;
-
+    my ($self, $eslifRecognizer, $recognizerInterface) = @_;
+    #
+    # Remember, events are always sorted like this:
+    # - completion, then
+    # - nullable, then
+    # - prediction
+    #
+    # This mean that, if a BOM is recognized, its event
+    # is guaranteed to come before prolog prediction event
+    #
     foreach (@{$eslifRecognizer->events()}) {
         my $event = $_->{event};
-        next unless $event;  # Can be undef for exhaustion
         my $symbol = $_->{symbol};
-        next unless $symbol;  # should never happen
-        if ($event eq 'ENCNAME$') {
-            ${$encoding_ref} = $eslifRecognizer->lexemeLastPause($symbol);
-            print STDERR "... Encoding declared to: ${$encoding_ref}\n";
-            next;
-        }
-        if ($event eq 'checkEncoding[]') {
-            if (! defined(${$encoding_ref})) {
-                ${$encoding_ref} = 'UTF-8';
-                print STDERR "... Encoding forced to: ${$encoding_ref}\n";
-            }
-            next;
+        $log->debugf("Event %s on symbol %s", $event, $symbol);
+        if ($event eq '^prolog') {
+            #
+            # No need for the BOM nor characterStream events anymore
+            #
+            $eslifRecognizer->eventOnOff('UTF32 BE', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
+            $eslifRecognizer->eventOnOff('UTF32 LE', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
+            $eslifRecognizer->eventOnOff('UTF16 BE', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
+            $eslifRecognizer->eventOnOff('UTF16 LE', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
+            $eslifRecognizer->eventOnOff('UTF8',     [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
+            $eslifRecognizer->eventOnOff('prolog',   [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_PREDICTED ], 0);
+            #
+            # We move to character stream, regardless if encoding was detected via the BOM or not
+            #
+            $recognizerInterface->setCharacterStream(1)
         }
     }
 }
@@ -113,34 +261,28 @@ sub _manage_events {
 1;
 
 __DATA__
-__[ XMLDecl ]__
-XMLDecl              ::= '<?xml' VersionInfo <EncodingDecl maybe> <SDDecl maybe> <S maybe> '?>'
-VersionInfo          ::= S 'version' Eq "'" VersionNum "'" | S 'version' Eq '"' VersionNum '"'
-EncodingDecl         ::= S 'encoding' Eq '"' EncName '"'
-                       | S 'encoding' Eq "'" EncName "'"
-S                    ::= [\x{20}\x{9}\x{D}\x{A}]:u+
-<EncodingDecl maybe> ::= EncodingDecl
-<EncodingDecl maybe> ::=
-Eq                   ::= <S maybe> '=' <S maybe>
-SDDecl               ::= S 'standalone' Eq "'" <yes or no> "'" | S 'standalone' Eq '"' <yes or no> '"'
-<SDDecl maybe>       ::= SDDecl
-<SDDecl maybe>       ::=
-<S maybe>            ::= S
-<S maybe>            ::=
-VersionNum           ::= '1.' <Digit many>
-EncName              ::= ENCNAME
-<Digit many>         ::= DIGIT+
-<yes or no>          ::= 'yes' | 'no'
+__[ BOM ]__
+#
+# Unusual ordering is not considered
+#
+BOM ::= [\x{00}] [\x{00}] [\x{FE}] [\x{FF}] action => UTF_32BE
+      | [\x{FF}] [\x{FE}] [\x{00}] [\x{00}] action => UTF_32LE
+      | [\x{FE}] [\x{FF}]                   action => UTF_16BE
+      | [\x{FF}] [\x{FE}]                   action => UTF_16LE
+      | [\x{EF}] [\x{BB}] [\x{BF}]          action => UTF_8
 
-:lexeme ::= ENCNAME pause => after event => ENCNAME$
-_ENCNAME_HEADER        ~ [A-Za-z]
-_ENCNAME_TRAILER       ~ [A-Za-z0-9._-]*
-_ENCNAME               ~ _ENCNAME_HEADER _ENCNAME_TRAILER
-ENCNAME                ~ _ENCNAME
+__[ Guess ]__
+#
+# Unusual ordering is not considered
+#
+Guess ::= [\x{00}] [\x{00}] [\x{00}] [\x{3C}] action => UTF_32BE
+        | [\x{3C}] [\x{00}] [\x{00}] [\x{00}] action => UTF_32_E
+        | [\x{00}] [\x{3C}] [\x{00}] [\x{3F}] action => UTF_16BE
+        | [\x{3C}] [\x{00}] [\x{3F}] [\x{00}] action => UTF_16LE
+        | [\x{3C}] [\x{3F}] [\x{78}] [\x{6D}] action => UTF_8
+        | [\x{4C}] [\x{6F}] [\x{A7}] [\x{94}] action => EBCDIC
 
-_DIGIT                 ~ [0-9]
-DIGIT                  ~ _DIGIT
-__[ XML ]__
+__[ XML 1.0 ]__
 #
 # From https://www.w3.org/TR/REC-xml (5th edition)
 #
@@ -148,322 +290,242 @@ __[ XML ]__
 # - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0000 (applied)
 # - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0001 (applied)
 # - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0002 (applied)
-# - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0003 (reply to the above mails)
-# - http://lists.xml.org/archives/xml-dev/200005/msg00549.html      (not applied)
 #
-# All literals are expressed via lexemes. This allow in particular the user of exceptions
-# in ESLIF, that required both sides of an exception to be lexemes.
+document           ::= prolog element <Misc any>
+Char               ::= [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+S1                 ::= [\x{20}\x{9}\x{D}\x{A}]:u
+S                  ::= S1+
+NameStartChar      ::= [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
+NameChar           ::= [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
+Name               ::= NameStartChar <NameChar any>
+Names              ::= Name+ separator => [\x{20}]:u
+Nmtoken            ::= NameChar+
+Nmtokens           ::= Nmtoken+ separator => [\x{20}]:u
+EntityValue        ::= '"' <EntityValue1 any>   '"' | "'" <EntityValue2 any>   "'"
+AttValue           ::= '"' <AttValue1 any>      '"' | "'" <AttValue2 any>      "'"
+SystemLiteral      ::= '"' <SystemLiteral1 any> '"' | "'" <SystemLiteral2 any> "'"
+PubidLiteral       ::= '"' <PubidChar1 any>     '"' | "'" <PubidChar2 any>     "'"
+PubidChar          ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-'()+,./:=?;!*#@$_%]
+CharData           ::= <CharData ok> - <CharData exception>
 #
-# By convention all helpers are enclosed (<>), all lexemes are in CAPITAL LETTERS, internal symbols start with x underscores (_).
-
-document      ::= prolog element <Misc any>
-Char          ::= CHAR
-S             ::= S1+
-Name          ::= NAME
-Names         ::= Name+    separator => [\x{20}]
-Nmtoken       ::= NMTOKEN
-Nmtokens      ::= Nmtoken+ separator => [\x{20}]
-
-EntityValue   ::= '"' <EntityValue Dquote any>   '"' | "'" <EntityValue Squote any>     "'"
-AttValue      ::= '"' <AttValue Dquote any>      '"' | "'" <AttValue Squote any>        "'"
-SystemLiteral ::= '"' <SystemLiteral Dquote any> '"' | "'" <SystemLiteral Squote any>   "'" 
-PubidLiteral  ::= '"' <PubidChar any>            '"' | "'" <PubidChar Without Quote any> "'" # No need of exception for PubidChar without "'"
-PubidChar     ::= PUBIDCHAR
-
-CharData      ::= CHARDATA_UNIT+                              # https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0000)
-
-Comment       ::= '<!--' <Comment Unit any> '-->'
-
-PI            ::= '<?' PITarget <PI Interior maybe> '?>'
-PITarget      ::= PITARGET_NAME - XML_CASE_INSENSITIVE
-
-CDSect        ::= CDStart CData CDEnd
-CDStart       ::= '<![CDATA['
-CData         ::= CHARDATA_UNIT*
-CDEnd         ::= ']]>'
-
-prolog        ::= <XMLDecl maybe> <Misc any>
-                | <XMLDecl maybe> <Misc any> doctypedecl <Misc any>
-XMLDecl       ::= '<?xml' VersionInfo <EncodingDecl maybe> <SDDecl maybe> <S maybe> '?>'
-VersionInfo   ::= S 'version' Eq "'" VersionNum "'" | S 'version' Eq '"' VersionNum '"'
-Eq            ::= <S maybe> '=' <S maybe>
-VersionNum    ::= '1.' <Digit many>
-Misc          ::= Comment | PI | S1                           # https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0002
-
-doctypedecl   ::= '<!DOCTYPE' S Name <S ExternalID maybe> <S maybe>                             '>'
-                | '<!DOCTYPE' S Name <S ExternalID maybe> <S maybe> '[' intSubset ']' <S maybe> '>'
-DeclSep       ::= PEReference | S1                            # https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0001
-intSubset     ::= <intSubset unit any>
-markupdecl    ::= elementdecl | AttlistDecl | EntityDecl | NotationDecl | PI | Comment
-
-extSubset     ::= <TextDecl maybe> extSubsetDecl
-extSubsetDecl ::= <extSubsetDecl unit any>
-
-SDDecl        ::= S 'standalone' Eq "'" <yes or no> "'" | S 'standalone' Eq '"' <yes or no> '"'
-
-element       ::= EmptyElemTag | STag content ETag 
-
-STag          ::= '<' Name <S Attribute any> <S maybe> '>'
-Attribute     ::= Name Eq AttValue 
-
-ETag          ::= '</' Name <S maybe> '>'
-
-content       ::= <CharData maybe> <content trailer unit any>
-
-EmptyElemTag  ::= '<' Name <S Attribute any> <S maybe> '/>'
-
-elementdecl   ::= '<!ELEMENT' S Name S contentspec <S maybe> '>'
-contentspec   ::= 'EMPTY' | 'ANY' | Mixed | children 
-
-children      ::= <choice or seq> <element content quantifier maybe>
-cp            ::= <Name or choice or seq> <element content quantifier maybe>
-choice        ::= '(' <S maybe> cp <choice interior many> <S maybe> ')'
-seq           ::= '(' <S maybe> cp <seq interior any> <S maybe> ')'
-
-Mixed         ::= '(' <S maybe> '#PCDATA' <Mixed interior any> <S maybe> ')*'
-                | '(' <S maybe> '#PCDATA'                      <S maybe> ')'
-
-AttlistDecl   ::= '<!ATTLIST' S Name <AttDef any> <S maybe> '>'
-AttDef        ::= S Name S AttType S DefaultDecl 
-
-AttType       ::= StringType | TokenizedType | EnumeratedType
-StringType    ::= 'CDATA'
-TokenizedType ::= 'ID'
-                | 'IDREF'
-                | 'IDREFS'
-                | 'ENTITY'
-                | 'ENTITIES'
-                | 'NMTOKEN'
-                | 'NMTOKENS'
-
-EnumeratedType ::= NotationType | Enumeration
-NotationType   ::= 'NOTATION' S '(' <S maybe> Name    <NotationType unit any> <S maybe> ')'
-Enumeration    ::=              '(' <S maybe> Nmtoken <Enumeration unit any>  <S maybe> ')'
-
-DefaultDecl    ::= '#REQUIRED'
-                 | '#IMPLIED'
-                 |            AttValue
-                 | '#FIXED' S AttValue
-
+# https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0000
+#
+# We make not nullable
+#
+# CharData           ::=                                                         # Because a lexeme can never be a nullable
+Comment            ::= '<!--' <Comment1 any> '-->'
+PI                 ::= '<?' PITarget         '?>'
+                     | '<?' PITarget S <PI1> '?>'
+PITarget           ::= <PITarget ok> - <PITarget exception>
+CDSect             ::= CDStart CData CDEnd
+CDStart            ::= '<![CDATA['
+CData              ::= <CData ok> - <CData exception>
+CData              ::= # Because a lexeme can never be a nullable
+CDEnd              ::= ']]>'
+prolog             ::= <XMLDecl maybe> <Misc any>
+                     | <XMLDecl maybe> <Misc any> doctypedecl <Misc any>
+XMLDecl            ::= '<?xml' VersionInfo <EncodingDecl maybe> <SDDecl maybe> <S maybe> '?>' ## Decl_action => ::copy[2]
+VersionInfo        ::= S 'version' Eq "'" VersionNum "'"
+                     | S 'version' Eq '"' VersionNum '"'
+Eq                 ::= <S maybe> '=' <S maybe>
+VersionNum         ::= '1.' <digit many>
+#
+# https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0002
+#
+# Use S1 instead of S in Misc
+#
+Misc               ::= Comment | PI | S1
+doctypedecl        ::= '<!DOCTYPE' S Name              <S maybe>                             '>'
+                     | '<!DOCTYPE' S Name              <S maybe> '[' intSubset ']' <S maybe> '>'
+                     | '<!DOCTYPE' S Name S ExternalID <S maybe>                             '>'
+                     | '<!DOCTYPE' S Name S ExternalID <S maybe> '[' intSubset ']' <S maybe> '>'
+#
+# https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0001
+#
+# Change S in DeclSep to S1
+#
+DeclSep            ::= PEReference | S1
+intSubset          ::= <intSubset1 any>
+markupdecl         ::= elementdecl | AttlistDecl | EntityDecl | NotationDecl | PI | Comment
+extSubset          ::=          extSubsetDecl
+                     | TextDecl extSubsetDecl
+extSubsetDecl      ::= <extSubsetDecl1 any>
+SDDecl             ::= S 'standalone' Eq "'" <yes or no> "'"
+                     | S 'standalone' Eq '"' <yes or no> '"'
+element            ::= EmptyElemTag
+                     | STag content ETag 
+STag               ::= '<' Name <STag1 any> <S maybe> '>'
+Attribute          ::= Name Eq AttValue 
+ETag               ::= '</' Name <S maybe> '>'
+content            ::= <CharData maybe> <content1 any>
+EmptyElemTag       ::= '<' Name <EmptyElemTag1 any> <S maybe> '/>'
+elementdecl        ::= '<!ELEMENT' S Name S contentspec <S maybe> '>'
+contentspec        ::= 'EMPTY' | 'ANY' | Mixed | children 
+children           ::= <choice or seq> <sequence maybe>
+cp                 ::= <Name or choice or seq> <sequence maybe>
+choice             ::= '(' <S maybe> cp <choice1 many> <S maybe> ')'
+seq                ::= '(' <S maybe> cp <seq1 any>     <S maybe> ')'
+Mixed              ::= '(' <S maybe> '#PCDATA' <Mixed1 any> <S maybe> ')*'
+                     | '(' <S maybe> '#PCDATA'              <S maybe> ')'
+AttlistDecl        ::= '<!ATTLIST' S Name <AttDef any> <S maybe> '>'
+AttDef             ::= S Name S AttType S DefaultDecl 
+AttType            ::= StringType | TokenizedType | EnumeratedType
+StringType         ::= 'CDATA'
+TokenizedType      ::= 'ID'| 'IDREF' | 'IDREFS' | 'ENTITY' | 'ENTITIES' | 'NMTOKEN' | 'NMTOKENS'
+EnumeratedType     ::= NotationType | Enumeration
+NotationType       ::= 'NOTATION' S '(' <S maybe> Name    <NotationType1 any> <S maybe> ')'
+Enumeration        ::=              '(' <S maybe> Nmtoken <Enumeration1 any>  <S maybe> ')'
+DefaultDecl        ::= '#REQUIRED'
+                     | '#IMPLIED'
+                     |            AttValue
+                     | '#FIXED' S AttValue
 conditionalSect    ::= includeSect | ignoreSect
-includeSect        ::= '<![' <S maybe> 'INCLUDE' <S maybe> '[' extSubsetDecl            ']]>'
-ignoreSect         ::= '<![' <S maybe> 'IGNORE'  <S maybe> '[' <ignoreSectContents any> ']]>'
-ignoreSectContents ::= Ignore <ignoreSectContents unit any>
-Ignore             ::= IGNORE_UNIT*
-
-CharRef        ::= '&#' <Digit many> ';' | '&#x' <Hexdigit many> ';'
-
-Reference      ::= EntityRef | CharRef
-EntityRef      ::= '&' Name ';'
-PEReference    ::= '%' Name ';'
-
-EntityDecl     ::= GEDecl | PEDecl
-GEDecl         ::= '<!ENTITY' S Name S EntityDef <S maybe> '>'
-PEDecl         ::= '<!ENTITY' S '%' S Name S PEDef <S maybe> '>'
-EntityDef      ::= EntityValue
-                 | ExternalID
-                 | ExternalID NDataDecl
-PEDef          ::= EntityValue | ExternalID
-
-ExternalID     ::= 'SYSTEM' S SystemLiteral | 'PUBLIC' S PubidLiteral S SystemLiteral
-NDataDecl      ::= S 'NDATA' S Name
-
-TextDecl       ::= '<?xml'             EncodingDecl <S maybe> '?>'
-                 | '<?xml' VersionInfo EncodingDecl <S maybe> '?>'
-
-extParsedEnt   ::=          <check encoding> content
-                 | TextDecl <check encoding> content
-
-EncodingDecl   ::= S 'encoding' Eq '"' EncName '"'
-                 | S 'encoding' Eq "'" EncName "'"
-EncName        ::= ENCNAME
-
-NotationDecl   ::= '<!NOTATION' S Name S ExternalID <S maybe> '>'
-                 | '<!NOTATION' S Name S PublicID   <S maybe> '>'
-PublicID       ::= 'PUBLIC' S PubidLiteral
-
-# #########################################################
-# Not used at grammar level 0
-# #########################################################
-# NameStartChar ::= NAMESTARTCHAR
-# NameChar      ::= NAMECHAR
-
-# #########################################################
-# Helpers
-# #########################################################
-<Misc any>                    ::= Misc*
-
-<EntityValue Dquote>          ::= [^%&"] | PEReference | Reference
-<EntityValue Dquote any>      ::= <EntityValue Dquote>*
-
-<EntityValue Squote>          ::= [^%&'] | PEReference | Reference
-<EntityValue Squote any>      ::= <EntityValue Squote>*
-
-<AttValue Dquote>             ::= [^<&"] | Reference
-<AttValue Dquote any>         ::= <AttValue Dquote>*
-
-<AttValue Squote>             ::= [^<&'] | Reference
-<AttValue Squote any>         ::= <AttValue Squote>*
-
-<SystemLiteral Dquote>        ::= [^"]
-<SystemLiteral Dquote any>    ::= <SystemLiteral Dquote>*
-
-<SystemLiteral Squote>        ::= [^']
-<SystemLiteral Squote any>    ::= <SystemLiteral Squote>*
-
-<PubidChar any>               ::= PubidChar*
-<PubidChar Without Quote>     ::= PUBIDCHAR_WITHOUT_QUOTE
-<PubidChar Without Quote any> ::= <PubidChar Without Quote>*
-
-<Comment Unit any>            ::= COMMENT_UNIT*
-<PI Unit any>                 ::= PI_UNIT*
-<PI Interior maybe>           ::= S <PI Unit any>
-<PI Interior maybe>           ::=
-
-<S maybe>                     ::= S
-<S maybe>                     ::=
-<XMLDecl maybe>               ::= XMLDecl
-<XMLDecl maybe>               ::=
-<EncodingDecl maybe>          ::= EncodingDecl
-<EncodingDecl maybe>          ::=
-<SDDecl maybe>                ::= SDDecl
-<SDDecl maybe>                ::=
-<Digit many>                  ::= DIGIT+
-<Hexdigit many>               ::= HEXDIGIT+
-
-<intSubset unit>              ::= markupdecl | DeclSep
-<intSubset unit any>          ::= <intSubset unit>*
-<S ExternalID>                ::= S ExternalID
-<S ExternalID maybe>          ::= <S ExternalID>
-<S ExternalID maybe>          ::=
-
-<TextDecl maybe>              ::= TextDecl
-<TextDecl maybe>              ::=
-<extSubsetDecl unit>          ::= markupdecl | conditionalSect | DeclSep
-<extSubsetDecl unit any>      ::= <extSubsetDecl unit>*
-
-<yes or no>                   ::= 'yes' | 'no'
-
-<S Attribute>                 ::= S Attribute
-<S Attribute any>             ::= <S Attribute>*
-
-<CharData maybe>              ::= CharData
-<CharData maybe>              ::=
-
-<element or Reference or CDSect or PI or Comment> ::= element | Reference | CDSect | PI | Comment
-<content trailer unit>        ::= <element or Reference or CDSect or PI or Comment> <CharData maybe>
-<content trailer unit any>    ::= <content trailer unit>*
-
-<choice or seq>                    ::= choice | seq
-<choice interior>                  ::= <S maybe> '|' <S maybe> cp
-<choice interior many>             ::= <choice interior>+
-<seq interior>                     ::= <S maybe> ',' <S maybe> cp
-<seq interior any>                 ::= <seq interior>*
-<Name or choice or seq>            ::= Name | choice | seq
-<element content quantifier>       ::= '?' | '*' | '+'
-<element content quantifier maybe> ::= <element content quantifier>
-<element content quantifier maybe> ::=
-
-<Mixed interior>                   ::= <S maybe> '|' <S maybe> Name
-<Mixed interior any>               ::= <Mixed interior>*
-
-<AttDef any>                  ::= AttDef*
-
-<NotationType unit>           ::= <S maybe> '|' <S maybe> Name
-<NotationType unit any>       ::= <NotationType unit>*
-<Enumeration unit>            ::= <S maybe> '|' <S maybe> Nmtoken
-<Enumeration unit any>        ::= <Enumeration unit>*
-
-# Note:
-# ignoreSectContents is a nullable and Marpa does not like at all when it is on the right side of a sequence.
-# The following rule:
-# <ignoreSectContents any> ::= ignoreSectContents*
-# will raise:
-# MARPA_ERR_COUNTED_NULLABLE: Nullable symbol on RHS of a sequence rule
-# So we revisit ignoreSectContents to an <ignoreSectContents not nullable> and do the impact
+includeSect        ::= '<![' <S maybe> 'INCLUDE' <S maybe> '[' extSubsetDecl ']]>'
 #
-# <ignoreSectContents any> ::= ignoreSectContents*
-# becomes:
-# <ignoreSectContents any> ::= <ignoreSectContents not nullable>*   # No impact if this is ignoreSectContents or the revisited version: this is a '*' sequence
+# The rule <ignoreSectContents any>  ::= ignoreSectContents* will trigger MARPA_ERR_COUNTED_NULLABLE: Nullable symbol on RHS of a sequence rule
+# because ignoreSectContents is a nullable, so we revisit the whole ignore sections by making
+# Ignore not nullable.
 #
-# <ignoreSectContents unit> ::= '<![' ignoreSectContents ']]>' Ignore
-# becomes:
-# <ignoreSectContents unit> ::= '<![' <ignoreSectContents not nullable> ']]>' Ignore   # ignoreSectContents is not nullable anymore
-#                             | '<!['                                   ']]>' Ignore   # so we introduce the absence of ignoreSectContents
-#
-# The non-nullable version of ignoreSectContents is:
-#
-# <ignoreSectContents not nullable> ::= <Ignore not nullable> <ignoreSectContents unit any>
-#                                     |                       <ignoreSectContents unit many>
-# <Ignore not nullable>          ::= <Ignore unit many>
-# <Ignore unit many>             ::= <Ignore unit>+
-# <ignoreSectContents unit many> ::= <ignoreSectContents unit>+
-#
-# SHOULD HAVE BEEN:
-# <ignoreSectContents any>      ::= ignoreSectContents*
-# <ignoreSectContents unit>     ::= '<![' ignoreSectContents ']]>' Ignore
-# <ignoreSectContents unit any> ::= <ignoreSectContents unit>*
-#
-# NOW IS:
-<ignoreSectContents any>      ::= <ignoreSectContents not nullable>*
-<ignoreSectContents unit>     ::= '<![' <ignoreSectContents not nullable> ']]>' Ignore
-                                | '<!['                                   ']]>' Ignore
-<ignoreSectContents not nullable> ::= <Ignore not nullable> <ignoreSectContents unit any>
-                                    |                       <ignoreSectContents unit many>
-<Ignore not nullable>          ::= IGNORE_UNIT+
-<ignoreSectContents unit many> ::= <ignoreSectContents unit>+
-<ignoreSectContents unit any>  ::= <ignoreSectContents unit>*
+# ORIGINAL:
+# ignoreSect         ::= '<![' <S maybe> 'IGNORE' <S maybe> '[' <ignoreSectContents any> ']]>'
+# ignoreSectContents ::= Ignore <ignoreSectContents1 any>
+# Ignore             ::= <CHARDATA any> - <IGNORE EXCEPTION>
+# Ignore             ::= # Because a lexeme cannot be a nullable
 
-<check encoding>               ::=
-# #########################################################
-# Lexemes
-# #########################################################
-_CHAR                          ~ [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
-_CHAR_WITHOUT_MINUS            ~ [\x{9}\x{A}\x{D}\x{20}-\x{2C}\x{2E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '-' is \x{2D}
-_CHAR_WITHOUT_QUESTION_MARK    ~ [\x{9}\x{A}\x{D}\x{20}-\x{3E}\x{40}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '?' is \x{3F}
-_CHAR_WITHOUT_GREATER_THAN     ~ [\x{9}\x{A}\x{D}\x{20}-\x{3D}\x{3F}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '>' is \x{3E}
-_CHAR_WITHOUT_RIGHT_BRACKET    ~ [\x{9}\x{A}\x{D}\x{20}-\x{5C}\x{5E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # ']' is \x{5D}
-_CHAR_WITHOUT_LOWER_THAN       ~ [\x{9}\x{A}\x{D}\x{20}-\x{3B}\x{3D}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '<' is \x{3C}
-_CHAR_WITHOUT_EXCLAMATION_MARK ~ [\x{9}\x{A}\x{D}\x{20}\x{22}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u        # '!' is \x{21}
-_CHAR_WITHOUT_LEFT_BRACKET     ~ [\x{9}\x{A}\x{D}\x{20}-\x{5A}\x{5C}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # ']' is \x{5B}
-_S1                            ~ [\x{20}\x{9}\x{D}\x{A}]:u
-_NAMESTARTCHAR                 ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
-_NAMECHAR                      ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
-<_NAMECHAR any>                ~ _NAMECHAR*
-_NMTOKEN                       ~ _NAMECHAR+
-_PUBIDCHAR                     ~ [\x{20}\x{D}\x{A}a-zA-Z0-9\-'()+,./:=?;!*#@$_%]
-_PUBIDCHAR_WITHOUT_QUOTE       ~ [\x{20}\x{D}\x{A}a-zA-Z0-9\-()+,./:=?;!*#@$_%]
-_CHARDATA_UNIT                 ~ ']]' _CHAR_WITHOUT_GREATER_THAN
-                               | ']'  _CHAR_WITHOUT_RIGHT_BRACKET
-                               |      _CHAR_WITHOUT_RIGHT_BRACKET
-_COMMENT_UNIT                  ~ '-' _CHAR_WITHOUT_MINUS
-                               |     _CHAR_WITHOUT_MINUS
-_PI_UNIT                       ~ '?' _CHAR_WITHOUT_GREATER_THAN
-                               |     _CHAR_WITHOUT_QUESTION_MARK
-_XML_CASE_INSENSITIVE          ~ 'xml':i
-_DIGIT                         ~ [0-9]
-_HEXDIGIT                      ~ [0-9a-fA-F]
-_IGNORE_UNIT                   ~ '<!' _CHAR_WITHOUT_LEFT_BRACKET
-                               | '<'  _CHAR_WITHOUT_EXCLAMATION_MARK
-                               |      _CHAR_WITHOUT_LOWER_THAN
-                               | _CHARDATA_UNIT
-_ENCNAME_HEADER                ~ [A-Za-z]
-_ENCNAME_TRAILER               ~ [A-Za-z0-9._-]*
-_ENCNAME                       ~ _ENCNAME_HEADER _ENCNAME_TRAILER
-_NAME                          ~ _NAMESTARTCHAR <_NAMECHAR any>
+ignoreSect         ::= '<![' <S maybe> 'IGNORE' <S maybe> '[' <ignoreSectContents any> ']]>'
+                     | '<![' <S maybe> 'IGNORE' <S maybe> '['                          ']]>'
+ignoreSectContents ::= Ignore <ignoreSectContents1 any>
+Ignore             ::= <Ignore ok> - <Ignore exception>
 
-CHAR                           ~ _CHAR
-S1                             ~ _S1
-NAME                           ~ _NAME
-PITARGET_NAME                  ~ _NAME
-NMTOKEN                        ~ _NMTOKEN
-PUBIDCHAR                      ~ _PUBIDCHAR
-PUBIDCHAR_WITHOUT_QUOTE        ~ _PUBIDCHAR_WITHOUT_QUOTE
-CHARDATA_UNIT                  ~ _CHARDATA_UNIT
-COMMENT_UNIT                   ~ _COMMENT_UNIT
-PI_UNIT                        ~ _PI_UNIT
-XML_CASE_INSENSITIVE           ~ _XML_CASE_INSENSITIVE
-DIGIT                          ~ _DIGIT
-HEXDIGIT                       ~ _HEXDIGIT
-IGNORE_UNIT                    ~ _IGNORE_UNIT
-ENCNAME                        ~ _ENCNAME
+CharRef            ::= '&#' <digit many> ';'
+                     | '&#x' <hexdigit many> ';'
+Reference          ::= EntityRef | CharRef
+EntityRef          ::= '&' Name ';'
+PEReference        ::= '%' Name ';'
+EntityDecl         ::= GEDecl | PEDecl
+GEDecl             ::= '<!ENTITY' S Name S EntityDef <S maybe> '>'
+PEDecl             ::= '<!ENTITY' S '%' S Name S PEDef <S maybe> '>'
+EntityDef          ::= EntityValue
+                     | ExternalID
+                     | ExternalID NDataDecl
+PEDef              ::= EntityValue | ExternalID 
+ExternalID         ::= 'SYSTEM' S SystemLiteral
+                     | 'PUBLIC' S PubidLiteral S SystemLiteral
+NDataDecl          ::= S 'NDATA' S Name 
+TextDecl           ::= '<?xml' <VersionInfo maybe> EncodingDecl <S maybe> '?>'
+extParsedEnt       ::= <TextDecl maybe> content 
+EncodingDecl       ::= S 'encoding' Eq '"' EncName '"'                               ## Decl_action => ::copy[4]
+                     | S 'encoding' Eq "'" EncName "'"                               ## Decl_action => ::copy[4]
+EncName            ::= <EncName header> <EncName trailer any>
+NotationDecl       ::= '<!NOTATION' S Name S ExternalID <S maybe> '>' 
+                     | '<!NOTATION' S Name S PublicID   <S maybe> '>' 
+PublicID           ::= 'PUBLIC' S PubidLiteral 
+
+<Misc any>                ::= Misc*
+<NameChar any>            ::= NameChar*
+<EntityValue1>            ::= [^%&"] | PEReference | Reference
+<EntityValue2>            ::= [^%&'] | PEReference | Reference
+<EntityValue1 any>        ::= <EntityValue1>*
+<EntityValue2 any>        ::= <EntityValue2>*
+<AttValue1>               ::= [^<&"] | Reference
+<AttValue2>               ::= [^<&'] | Reference
+<AttValue1 any>           ::= <AttValue1>*
+<AttValue2 any>           ::= <AttValue2>*
+<SystemLiteral1>          ::= [^"]
+<SystemLiteral2>          ::= [^']
+<SystemLiteral1 any>      ::= <SystemLiteral1>*
+<SystemLiteral2 any>      ::= <SystemLiteral2>*
+<PubidChar1 any>          ::= PubidChar*
+<PubidChar2>              ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-()+,./:=?;!*#@$_%]  # Same as PubidChar but without '
+<PubidChar2 any>          ::= <PubidChar2>*
+<Char without minus>      ::= [\x{9}\x{A}\x{D}\x{20}-\x{2C}\x{2E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '-' is \x{2D}
+<Comment1>                ::=     [\x{9}\x{A}\x{D}\x{20}-\x{2C}\x{2E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '-' is \x{2D}
+                            | '-' [\x{9}\x{A}\x{D}\x{20}-\x{2C}\x{2E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '-' is \x{2D}
+<Comment1 any>            ::= <Comment1>*
+<PI1>                     ::= <PI1 ok> - <PI1 exception>
+<PI1>                     ::= # Because a lexeme can never be a nullable
+<XMLDecl maybe>           ::= XMLDecl
+<XMLDecl maybe>           ::=
+<EncodingDecl maybe>      ::= EncodingDecl ## Decl_action => ::shift
+<EncodingDecl maybe>      ::=
+<SDDecl maybe>            ::= SDDecl
+<SDDecl maybe>            ::= 
+<S maybe>                 ::= S
+<S maybe>                 ::= 
+<digit>                   ::= [0-9]
+<digit many>              ::= <digit>+
+<hexdigit>                ::= [0-9a-fA-F]
+<hexdigit many>           ::= <hexdigit>+
+<intSubset1>              ::= markupdecl | DeclSep
+<intSubset1 any>          ::= <intSubset1>*
+<extSubsetDecl1>          ::= markupdecl | conditionalSect | DeclSep
+<extSubsetDecl1 any>      ::= <extSubsetDecl1>*
+<yes or no>               ::= 'yes' | 'no'
+<STag1>                   ::= S Attribute
+<STag1 any>               ::= <STag1>*
+<CharData maybe>          ::= CharData
+<CharData maybe>          ::=
+<content1>                ::= element   <CharData maybe>
+                            | Reference <CharData maybe>
+                            | CDSect    <CharData maybe>
+                            | PI        <CharData maybe>
+                            | Comment   <CharData maybe>
+<content1 any>            ::= <content1>*
+<EmptyElemTag1>           ::= S Attribute
+<EmptyElemTag1 any>       ::= <EmptyElemTag1>*
+<choice or seq>           ::= choice | seq
+<sequence>                ::= '?' | '*' | '+'
+<sequence maybe>          ::= <sequence>
+<sequence maybe>          ::=
+<Name or choice or seq>   ::= Name | choice | seq
+<choice1>                 ::= <S maybe> '|' <S maybe> cp
+<choice1 many>            ::= <choice1>+
+<seq1>                    ::= <S maybe> ',' <S maybe> cp
+<seq1 any>                ::= <seq1>*
+<Mixed1>                  ::= <S maybe> '|' <S maybe> Name
+<Mixed1 any>              ::= <Mixed1>*
+<AttDef any>              ::= AttDef*
+<NotationType1>           ::= <S maybe> '|' <S maybe> Name
+<NotationType1 any>       ::= <NotationType1>*
+<Enumeration1>            ::= <S maybe> '|' <S maybe> Nmtoken
+<Enumeration1 any>        ::= <Enumeration1>*
+<ignoreSectContents any>  ::= ignoreSectContents*
+<ignoreSectContents1>     ::= '<![' ignoreSectContents ']]>' Ignore
+<ignoreSectContents1 any> ::= <ignoreSectContents1>*
+<VersionInfo maybe>       ::= VersionInfo
+<VersionInfo maybe>       ::=
+<TextDecl maybe>          ::= TextDecl
+<TextDecl maybe>          ::=
+<EncName header>          ::= [A-Za-z]
+<EncName trailer>         ::= [A-Za-z0-9._-]
+<EncName trailer any>     ::= <EncName trailer>*
+
+_CHARDATA              ~ [^<&]
+_CHAR                  ~ [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+<_CHARDATA any>        ~ _CHARDATA*
+<_CHAR any>            ~ _CHAR*
+<_CHARDATA EXCEPTION>  ~ <_CHARDATA any> ']]>' <_CHARDATA any>
+<_PI EXCEPTION>        ~ <_CHARDATA any> '?>' <_CHARDATA any>
+<_CDATA EXCEPTION>     ~ <_CHARDATA any> ']]>' <_CHARDATA any>
+<_IGNORE EXCEPTION>    ~ <_CHARDATA any> '<![' <_CHARDATA any>
+                       | <_CHARDATA any> ']]>' <_CHARDATA any>
+<_NAMESTARTCHAR>       ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
+<_NAMECHAR>            ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
+<_NAMECHAR any>        ~ <_NAMECHAR>*
+<_NAME>                ~ <_NAMESTARTCHAR> <_NAMECHAR any>
+<_PITARGET EXCEPTION>  ~ [Xx] [Mm] [Ll]
+
+<CharData ok>          ~ <_CHARDATA any>
+<CharData exception>   ~ <_CHARDATA EXCEPTION>
+
+<PITarget ok>          ~ <_NAME>
+<PITarget exception>   ~ <_PITARGET EXCEPTION>
+
+<CData ok>             ~ <_CHAR any>
+<CData exception>      ~ <_CDATA EXCEPTION>
+
+<Ignore ok>            ~ <_CHAR any>
+<Ignore exception>     ~ <_IGNORE EXCEPTION>
+
+<PI1 ok>               ~ <_CHAR any>
+<PI1 exception>        ~ <_PI EXCEPTION>

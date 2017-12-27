@@ -249,21 +249,15 @@ sub _manage_events {
     foreach (@{$eslifRecognizer->events()}) {
         my $event = $_->{event};
         my $symbol = $_->{symbol};
-        $log->debugf("Event %s on symbol %s", $event, $symbol);
-        if ($event eq '^prolog') {
-            #
-            # No need for the BOM nor characterStream events anymore
-            #
-            $eslifRecognizer->eventOnOff('UTF32 BE', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
-            $eslifRecognizer->eventOnOff('UTF32 LE', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
-            $eslifRecognizer->eventOnOff('UTF16 BE', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
-            $eslifRecognizer->eventOnOff('UTF16 LE', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
-            $eslifRecognizer->eventOnOff('UTF8',     [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_AFTER ], 0);
-            $eslifRecognizer->eventOnOff('prolog',   [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_PREDICTED ], 0);
-            #
-            # We move to character stream, regardless if encoding was detected via the BOM or not
-            #
-            $recognizerInterface->setCharacterStream(1)
+        if ($event =~ /^lexeme/) {
+            my $value = $eslifRecognizer->lexemeLastPause($symbol);
+            if ($log->is_trace) {
+                $log->tracef("Lexeme <%s>, length %d, value: %s", $symbol, length($value), $value);
+            } else {
+                $log->debugf("Lexeme <%s>, length %d", $symbol, length($value));
+            }
+        } else {
+            $log->debugf("Event %s on symbol %s", $event, $symbol);
         }
     }
 }
@@ -510,32 +504,37 @@ PublicID           ::= 'PUBLIC' S PubidLiteral
 <EncName trailer>         ::= [A-Za-z0-9._-]
 <EncName trailer any>     ::= <EncName trailer>*
 
-_CHARDATA              ~ [^<&]
-_CHAR                  ~ [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
-<_CHARDATA any>        ~ _CHARDATA*
-<_CHAR any>            ~ _CHAR*
+<_CHARDATA>            ~ [^<&]
+<_CHAR>                ~ [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+<_CHARDATA any>        ~ <_CHARDATA>*
+<_CHAR any>            ~ <_CHAR>*
 <_CHARDATA EXCEPTION>  ~ <_CHARDATA any> ']]>' <_CHARDATA any>
-<_PI EXCEPTION>        ~ <_CHARDATA any> '?>' <_CHARDATA any>
-<_CDATA EXCEPTION>     ~ <_CHARDATA any> ']]>' <_CHARDATA any>
-<_IGNORE EXCEPTION>    ~ <_CHARDATA any> '<![' <_CHARDATA any>
-                       | <_CHARDATA any> ']]>' <_CHARDATA any>
+<_PI EXCEPTION>        ~ <_CHAR any> '?>' <_CHAR any>
+<_CDATA EXCEPTION>     ~ <_CHAR any> ']]>' <_CHAR any>
+<_IGNORE EXCEPTION>    ~ <_CHAR any> '<![' <_CHAR any>
+                       | <_CHAR any> ']]>' <_CHAR any>
 <_NAMESTARTCHAR>       ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
 <_NAMECHAR>            ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
 <_NAMECHAR any>        ~ <_NAMECHAR>*
 <_NAME>                ~ <_NAMESTARTCHAR> <_NAMECHAR any>
 <_PITARGET EXCEPTION>  ~ [Xx] [Mm] [Ll]
 
+:lexeme ::= <CharData ok> pause => after event => lexemeCharData$
 <CharData ok>          ~ <_CHARDATA any>
 <CharData exception>   ~ <_CHARDATA EXCEPTION>
 
+:lexeme ::= <PITarget ok> pause => after event => lexemePITargetok$
 <PITarget ok>          ~ <_NAME>
 <PITarget exception>   ~ <_PITARGET EXCEPTION>
 
+:lexeme ::= <CData ok> pause => after event => lexemeCDataok$
 <CData ok>             ~ <_CHAR any>
 <CData exception>      ~ <_CDATA EXCEPTION>
 
+:lexeme ::= <Ignore ok> pause => after event => lexemeIgnoreok$
 <Ignore ok>            ~ <_CHAR any>
 <Ignore exception>     ~ <_IGNORE EXCEPTION>
 
+:lexeme ::= <PI1 ok> pause => after event => lexemePI1ok$
 <PI1 ok>               ~ <_CHAR any>
 <PI1 exception>        ~ <_PI EXCEPTION>

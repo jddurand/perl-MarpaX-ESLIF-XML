@@ -59,11 +59,13 @@ use Log::Log4perl qw/:easy/;
 use Log::Any::Adapter;
 use Log::Any qw/$log/;
 use MarpaX::ESLIF::XML::XML10;
+use Try::Tiny;
+
 #
 # Init log
 #
 our $defaultLog4perlConf = '
-log4perl.rootLogger              = DEBUG, Screen
+log4perl.rootLogger              = TRACE, Screen
 log4perl.appender.Screen         = Log::Log4perl::Appender::Screen
 log4perl.appender.Screen.stderr  = 1
 log4perl.appender.Screen.layout  = PatternLayout
@@ -76,9 +78,11 @@ foreach (@ARGV) {
     my $filename = shift;
     next unless $filename =~ /\.xml$/i;
     $log->infof("Parsing %s", $filename);
-    eval {
+    try {
         my $reader = MyReader::File->new($filename);
         MarpaX::ESLIF::XML::XML10->new(reader => $reader)->parse;
-    }
+    } catch {
+        $log->errorf('%s', $_);
+    };
 }
 

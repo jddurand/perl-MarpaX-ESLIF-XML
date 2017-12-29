@@ -4,6 +4,7 @@ use warnings FATAL => 'all';
 package MarpaX::ESLIF::XML::XML10;
 use Carp qw/croak/;
 use Data::Section -setup;
+use Data::Hexdumper qw/hexdump/;
 use I18N::Charset qw/iana_charset_name/;
 use Log::Any '$log', filter => \&_log_filter;
 use MarpaX::ESLIF;
@@ -13,6 +14,19 @@ use MarpaX::ESLIF::XML::ValueInterface::Decl;
 use MarpaX::ESLIF::XML::ValueInterface::Guess;
 use MarpaX::ESLIF::XML::ValueInterface;
 use Safe::Isa;
+
+#
+# Init log
+#
+our $defaultLog4perlConf = '
+log4perl.rootLogger              = TRACE, Screen
+log4perl.appender.Screen         = Log::Log4perl::Appender::Screen
+log4perl.appender.Screen.stderr  = 1
+log4perl.appender.Screen.layout  = PatternLayout
+log4perl.appender.Screen.layout.ConversionPattern = %d %-5p %6P %m{chomp}%n
+';
+Log::Log4perl::init(\$defaultLog4perlConf);
+Log::Any::Adapter->set('Log4perl');
 
 # ABSTRACT: XML 1.0 parser
 
@@ -96,6 +110,9 @@ sub _iana_charset {
     my ($self, $encoding) = @_;
 
     return undef unless defined($encoding);
+    #
+    # This should never fail
+    #
     my $charset = iana_charset_name($encoding) || croak "Failed to get charset name from $encoding";
 
     return $charset
@@ -147,29 +164,11 @@ sub _charset_from_decl {
     return (undef, $recognizerInterface->bookkeeping())
 }
 
-sub parse {
-    my ($self) = @_;
+sub _encoding {
+    my ($self, $charset_from_bom, $charset_from_guess, $charset_from_decl) = @_;
 
-    my ($charset_from_bom, $charset_from_guess, $charset_from_decl, $bookkeeping);
-    #
-    # Get encoding from BOM
-    #
-    ($charset_from_bom, $bookkeeping) = $self->_charset_from_bom;
-    #
-    # Guess encoding from first bytes
-    #
-    ($charset_from_guess, $bookkeeping) = $self->_charset_from_guess($bookkeeping);
-    #
-    # Guess encoding from declaration, this implies charset recognition from MarpaX::ESLIF if no encoding came from BOM or guess
-    #
-    ($charset_from_decl, $bookkeeping) = $self->_charset_from_decl($bookkeeping, $charset_from_bom // $charset_from_guess);
-    #
-    # We apply the algorithm "Raw XML charset encoding detection" as per rometools
-    # https://rometools.github.io/rome/RssAndAtOMUtilitiEsROMEV0.5AndAboveTutorialsAndArticles/XMLCharsetEncodingDetectionHowRssAndAtOMUtilitiEsROMEHelpsGettingTheRightCharsetEncoding.html
-    #
-    my $encoding;
     $log->debugf("Charset from BOM: %s, Guess: %s, Declaration: %s", $charset_from_bom, $charset_from_guess, $charset_from_decl);
-
+    my $encoding;
     if (! defined($charset_from_bom)) {
         if (! defined($charset_from_guess) || ! defined($charset_from_decl)) {
             $encoding = 'UTF-8';
@@ -214,6 +213,24 @@ sub parse {
         }
     }
 
+    return $encoding
+}
+
+sub parse {
+    my ($self) = @_;
+
+    my ($charset_from_bom, $charset_from_guess, $charset_from_decl, $bookkeeping);
+    #
+    # Get encoding from BOM, guess and declaration (the later implies charset recognition from MarpaX::ESLIF if no encoding came from BOM nor guess)
+    #
+    ($charset_from_bom, $bookkeeping)   = $self->_charset_from_bom;
+    ($charset_from_guess, $bookkeeping) = $self->_charset_from_guess($bookkeeping);
+    ($charset_from_decl, $bookkeeping)  = $self->_charset_from_decl($bookkeeping, $charset_from_bom // $charset_from_guess);
+    #
+    # Algorithm "Raw XML charset encoding detection"
+    # https://rometools.github.io/rome/RssAndAtOMUtilitiEsROMEV0.5AndAboveTutorialsAndArticles/XMLCharsetEncodingDetectionHowRssAndAtOMUtilitiEsROMEHelpsGettingTheRightCharsetEncoding.html
+    #
+    my $encoding = $self->_encoding($charset_from_bom, $charset_from_guess, $charset_from_decl);
     $log->debugf("Charset used: %s", $encoding);
     #
     # XML itself
@@ -222,7 +239,7 @@ sub parse {
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
     my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new($XML10_GRAMMAR, $recognizerInterface);
     #
-    # We ask for initial events - this must be explicit
+    # Because of SAX events, we use explicitly the recognizer.
     #
     if ($eslifRecognizer->scan()) {
         $self->_manage_events($eslifRecognizer, $recognizerInterface);
@@ -232,7 +249,7 @@ sub parse {
         }
     }
 
-    return MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value()
+    return MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value();
 }
 
 sub _manage_events {
@@ -242,22 +259,21 @@ sub _manage_events {
     # - completion, then
     # - nullable, then
     # - prediction
-    #
-    # This mean that, if a BOM is recognized, its event
-    # is guaranteed to come before prolog prediction event
-    #
     foreach (@{$eslifRecognizer->events()}) {
         my $event = $_->{event};
         my $symbol = $_->{symbol};
-        if ($event =~ /^lexeme/) {
+
+        if ($event eq 'PITarget$') {
             my $value = $eslifRecognizer->lexemeLastPause($symbol);
-            if ($log->is_trace) {
-                $log->tracef("Lexeme <%s>, length %d, value: %s", $symbol, length($value), $value);
-            } else {
-                $log->debugf("Lexeme <%s>, length %d", $symbol, length($value));
+            $log->debugf('Event %s on symbol <%s>, value: %s', $event, $symbol, $value);
+            if ($value =~ /^xml$/i) {
+                my @location = $eslifRecognizer->location();
+                if (@location) {
+                    croak "PITarget cannot be '$value' at line $location[0], column $location[1]";
+                } else {
+                    croak "PITarget cannot be '$value'";
+                }
             }
-        } else {
-            $log->debugf("Event %s on symbol %s", $event, $symbol);
         }
     }
 }
@@ -295,6 +311,16 @@ __[ XML 1.0 ]__
 # - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0001 (applied)
 # - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0002 (applied)
 #
+# Note:
+# Concerning XML Exceptions there are three categories:
+# - Content interior: We create a character class without for Char minus the '-' character
+# - PITarget        : Native BNF exception is doing it
+# - Others          : They are ALL in the form: <character> - ( <character>* <exception longer than one character> <character>* )
+#                     where <exception longer than one character> is always an expected terminal preceeding and/or succeeding <character>* !
+#                     So this mean there is NO needed to write exception...: the grammar will natively stop <character>* parsing as soon
+#                     as it sees <exception longer than one character> in stream, because it is always working in the LATM (Longest Acceptable
+#                     Token Match) mode...
+
 document           ::= prolog element <Misc any>
 Char               ::= [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
 S1                 ::= [\x{20}\x{9}\x{D}\x{A}]:u
@@ -310,21 +336,13 @@ AttValue           ::= '"' <AttValue1 any>      '"' | "'" <AttValue2 any>      "
 SystemLiteral      ::= '"' <SystemLiteral1 any> '"' | "'" <SystemLiteral2 any> "'"
 PubidLiteral       ::= '"' <PubidChar1 any>     '"' | "'" <PubidChar2 any>     "'"
 PubidChar          ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-'()+,./:=?;!*#@$_%]
-CharData           ::= <CharData ok> - <CharData exception>
-#
-# https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0000
-#
-# We make not nullable
-#
-# CharData           ::=                                                         # Because a lexeme can never be a nullable
-Comment            ::= '<!--' <Comment1 any> '-->'
-PI                 ::= '<?' PITarget         '?>'
-                     | '<?' PITarget S <PI1> '?>'
-PITarget           ::= <PITarget ok> - <PITarget exception>
+CharData           ::= <CharData Exceptioned>
+Comment            ::= '<!--' <Comment Interior> '-->'
+PI                 ::= '<?' PITarget                    '?>'
+                     | '<?' PITarget S <PI Exceptioned> '?>'
 CDSect             ::= CDStart CData CDEnd
 CDStart            ::= '<![CDATA['
-CData              ::= <CData ok> - <CData exception>
-CData              ::= # Because a lexeme can never be a nullable
+CData              ::= <CData Exceptioned>
 CDEnd              ::= ']]>'
 prolog             ::= <XMLDecl maybe> <Misc any>
                      | <XMLDecl maybe> <Misc any> doctypedecl <Misc any>
@@ -399,8 +417,7 @@ includeSect        ::= '<![' <S maybe> 'INCLUDE' <S maybe> '[' extSubsetDecl ']]
 ignoreSect         ::= '<![' <S maybe> 'IGNORE' <S maybe> '[' <ignoreSectContents any> ']]>'
                      | '<![' <S maybe> 'IGNORE' <S maybe> '['                          ']]>'
 ignoreSectContents ::= Ignore <ignoreSectContents1 any>
-Ignore             ::= <Ignore ok> - <Ignore exception>
-
+Ignore             ::= <Ignore Exceptioned>
 CharRef            ::= '&#' <digit many> ';'
                      | '&#x' <hexdigit many> ';'
 Reference          ::= EntityRef | CharRef
@@ -442,12 +459,6 @@ PublicID           ::= 'PUBLIC' S PubidLiteral
 <PubidChar1 any>          ::= PubidChar*
 <PubidChar2>              ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-()+,./:=?;!*#@$_%]  # Same as PubidChar but without '
 <PubidChar2 any>          ::= <PubidChar2>*
-<Char without minus>      ::= [\x{9}\x{A}\x{D}\x{20}-\x{2C}\x{2E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '-' is \x{2D}
-<Comment1>                ::=     [\x{9}\x{A}\x{D}\x{20}-\x{2C}\x{2E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '-' is \x{2D}
-                            | '-' [\x{9}\x{A}\x{D}\x{20}-\x{2C}\x{2E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u # '-' is \x{2D}
-<Comment1 any>            ::= <Comment1>*
-<PI1>                     ::= <PI1 ok> - <PI1 exception>
-<PI1>                     ::= # Because a lexeme can never be a nullable
 <XMLDecl maybe>           ::= XMLDecl
 <XMLDecl maybe>           ::=
 <EncodingDecl maybe>      ::= EncodingDecl ## Decl_action => ::shift
@@ -504,37 +515,72 @@ PublicID           ::= 'PUBLIC' S PubidLiteral
 <EncName trailer>         ::= [A-Za-z0-9._-]
 <EncName trailer any>     ::= <EncName trailer>*
 
-<_CHARDATA>            ~ [^<&]
-<_CHAR>                ~ [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
-<_CHARDATA any>        ~ <_CHARDATA>*
-<_CHAR any>            ~ <_CHAR>*
-<_CHARDATA EXCEPTION>  ~ <_CHARDATA any> ']]>' <_CHARDATA any>
-<_PI EXCEPTION>        ~ <_CHAR any> '?>' <_CHAR any>
-<_CDATA EXCEPTION>     ~ <_CHAR any> ']]>' <_CHAR any>
-<_IGNORE EXCEPTION>    ~ <_CHAR any> '<![' <_CHAR any>
-                       | <_CHAR any> ']]>' <_CHAR any>
-<_NAMESTARTCHAR>       ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
-<_NAMECHAR>            ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
-<_NAMECHAR any>        ~ <_NAMECHAR>*
-<_NAME>                ~ <_NAMESTARTCHAR> <_NAMECHAR any>
-<_PITARGET EXCEPTION>  ~ [Xx] [Mm] [Ll]
+################
+# XML Exceptions
+################
+#
+# -------------------------------------------------------------
+# Comment ::= '<!--' ((Char - '-') | ('-' (Char - '-')))* '-->'
+# -------------------------------------------------------------
+#
+<Char minus sign>       ::= [\x{9}\x{A}\x{D}\x{20}-\x{2C}\x{2E}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u  # '-' is \x{2D}
+<Comment Interior Unit> ::=     <Char minus sign>
+                          | '-' <Char minus sign>
+<Comment Interior>      ::= <Comment Interior Unit>*
+#
+# -----------------------------------------------------------
+# PI ::= '<?' PITarget (S (Char* - (Char* '?>' Char*)))? '?>'
+# -----------------------------------------------------------
+#
+# No need for exception, because '?>' is longer than Char
+#
+<PI Exceptioned>        ::= Char*
+#
+# ---------------------------------------------------------
+# PITarget ::= Name - (('X' | 'x') ('M' | 'm') ('L' | 'l'))
+# ---------------------------------------------------------
+#
+# The following is working, but we want this module to be
+# more user-friendly, saying that a PITarget cannot be 'xml':i more explicitly.
+# Since we will use events anyway because of SAX support, we add an explicit
+# event for PITarget
+# <NAMESTARTCHAR>           ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
+# <NAMECHAR>                ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
+# <NAMECHAR any>            ~ <NAMECHAR>*
+# <NAME>                    ~ <NAMESTARTCHAR> <NAMECHAR any>
+# <XML>                     ~ [Xx] [Mm] [Ll]
+# <PITarget>              ::= <NAME> - <XML>
 
-:lexeme ::= <CharData ok> pause => after event => lexemeCharData$
-<CharData ok>          ~ <_CHARDATA any>
-<CharData exception>   ~ <_CHARDATA EXCEPTION>
+<NAMESTARTCHAR>           ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
+<NAMECHAR>                ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
+<NAMECHAR any>            ~ <NAMECHAR>*
+:lexeme ::= PITarget pause => after event => PITarget$
+<PITarget>                ~ <NAMESTARTCHAR> <NAMECHAR any>
 
-:lexeme ::= <PITarget ok> pause => after event => lexemePITargetok$
-<PITarget ok>          ~ <_NAME>
-<PITarget exception>   ~ <_PITARGET EXCEPTION>
-
-:lexeme ::= <CData ok> pause => after event => lexemeCDataok$
-<CData ok>             ~ <_CHAR any>
-<CData exception>      ~ <_CDATA EXCEPTION>
-
-:lexeme ::= <Ignore ok> pause => after event => lexemeIgnoreok$
-<Ignore ok>            ~ <_CHAR any>
-<Ignore exception>     ~ <_IGNORE EXCEPTION>
-
-:lexeme ::= <PI1 ok> pause => after event => lexemePI1ok$
-<PI1 ok>               ~ <_CHAR any>
-<PI1 exception>        ~ <_PI EXCEPTION>
+#
+# ---------------------------------------
+# CData ::= (Char* - (Char* ']]>' Char*)) 
+# ---------------------------------------
+#
+# No need for exception, because ']]>' is longer than Char
+#
+<CData Exceptioned>     ::= Char*
+#
+# ------------------------------------------------
+# Ignore ::= Char+ - (Char+ ('<![' | ']]>') Char+) 
+# ------------------------------------------------
+#
+# Note that we made Ignore not nullable.
+# No need for exception, because '<![' and ']]>' are longer than Char
+#
+<Ignore Exceptioned>    ::= Char+
+#
+# -------------------------------------------
+# CharData ::= [^<&]* - ([^<&]* ']]>' [^<&]*)
+# -------------------------------------------
+#
+# Note that we made CharData not nullable.
+# No need for exception, because ']]>' is longer than <CharData Unit>
+#
+<CharData Unit>         ::= [^<&]
+<CharData Exceptioned>  ::= <CharData Unit>+

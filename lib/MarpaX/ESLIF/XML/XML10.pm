@@ -85,14 +85,14 @@ sub new {
 sub _log_filter {
     my ($category, $level, $msg) = @_;
 
-    return if $MarpaX::Logger::XML::Logger::Silent;
+    return if $MarpaX::ESLIF::XML::Silent;
     return $msg;
 }
 
 sub _charset_from_bom {
     my ($self, $encode) = @_;
 
-    local $MarpaX::Logger::XML::Logger::Silent = 1;
+    local $MarpaX::ESLIF::XML::Silent = 1;
     my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1);
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::BOM->new();
 
@@ -136,7 +136,7 @@ sub _iana_charset {
 sub _charset_from_guess {
     my ($self, $encode) = @_;
 
-    local $MarpaX::Logger::XML::Logger::Silent = 1;
+    local $MarpaX::ESLIF::XML::Silent = 1;
     my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1);
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Guess->new();
 
@@ -157,7 +157,7 @@ sub _charset_from_guess {
 sub _charset_from_decl {
     my ($self, $encode) = @_;
 
-    local $MarpaX::Logger::XML::Logger::Silent = 1;
+    local $MarpaX::ESLIF::XML::Silent = 1;
     my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1, isCharacterStream => 1);
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Decl->new();
 

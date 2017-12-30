@@ -72,7 +72,7 @@ Returns a true or a false value, indicating if valuation should allow ambiguous 
 =cut
 
 sub isWithAmbiguous {
-    return 0
+    return 1
 }
 
 =head3 isWithNull

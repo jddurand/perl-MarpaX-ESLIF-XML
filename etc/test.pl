@@ -3,7 +3,6 @@ package MyReader::File;
 use strict;
 use diagnostics;
 use Carp qw/croak/;
-use IO::File;
 use Log::Any qw/$log/;
 
 my $BUFLEN = 1024;
@@ -12,44 +11,35 @@ sub new {
     my ($class, $filename) = @_;
     croak "Missing filename" unless defined($filename);
 
-    my $fh = IO::File->new($filename, 'r') || croak "Cannot open $filename, $!";
-    $fh->binmode || croak "binmode failure on $filename, $!";
+    $log->tracef('Opening %s', $filename);
+    open(my $fh, '< :raw :bytes', $filename) || croak "Cannot open $filename, $!";
 
-    return bless { fh => $fh, data => undef, isEof => undef }, $class
+    return bless { filename => $filename, fh => $fh, data => undef, isEof => undef }, $class
 }
 
 sub DESTROY {
     my ($self) = @_;
 
-    $self->{fh}->close
+    $log->tracef('Closing %s', $self->{filename});
+    close($self->{fh}) || warn sprintf('Failed to %s, %s', $self->{filename}, $!)
 }
 
 sub read {
     my ($self) = @_;
 
-    $log->tracef("Reading %d bytes", $BUFLEN);
-    return $self->{fh}->read($self->{data}, $BUFLEN)
-}
-
-sub byte {
-    my ($self) = @_;
-
-    $log->trace("Reading a byte");
-    return $self->{fh}->read($self->{data}, 1)
+    return read($self->{fh}, $self->{data}, $BUFLEN);
 }
 
 sub data {
     my ($self) = @_;
 
-    $log->trace("Return data");
     return $self->{data}
 }
 
 sub isEof {
     my ($self) = @_;
 
-    $log->tracef("Returning eof = %s", $self->{fh}->eof);
-    return $self->{fh}->eof
+    return eof($self->{fh})
 }
 
 package main;
@@ -65,7 +55,7 @@ use Try::Tiny;
 # Init log
 #
 our $defaultLog4perlConf = '
-log4perl.rootLogger              = TRACE, Screen
+log4perl.rootLogger              = DEBUG, Screen
 log4perl.appender.Screen         = Log::Log4perl::Appender::Screen
 log4perl.appender.Screen.stderr  = 1
 log4perl.appender.Screen.layout  = PatternLayout
@@ -73,6 +63,11 @@ log4perl.appender.Screen.layout.ConversionPattern = %d %-5p %6P %m{chomp}%n
 ';
 Log::Log4perl::init(\$defaultLog4perlConf);
 Log::Any::Adapter->set('Log4perl');
+
+#
+# Take care, this can contain UTF-8 stuff
+#
+use open ':std', ':encoding(UTF-8)';
 
 foreach (@ARGV) {
     my $filename = shift;

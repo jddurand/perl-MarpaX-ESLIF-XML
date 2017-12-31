@@ -3,32 +3,16 @@ use warnings FATAL => 'all';
 
 package MarpaX::ESLIF::XML::XML10;
 use Carp qw/croak/;
-use Data::HexDump qw/HexDump/;
 use Data::Section -setup;
 use I18N::Charset qw/enco_charset_name/;
 use Log::Any '$log', filter => \&_log_filter;
 use MarpaX::ESLIF;
 use MarpaX::ESLIF::XML::RecognizerInterface;
-use MarpaX::ESLIF::XML::RecognizerInterface2;
 use MarpaX::ESLIF::XML::ValueInterface::BOM;
 use MarpaX::ESLIF::XML::ValueInterface::Decl;
 use MarpaX::ESLIF::XML::ValueInterface::Guess;
 use MarpaX::ESLIF::XML::ValueInterface;
 use MarpaX::ESLIF::XML::Encode;
-use Safe::Isa;
-
-#
-# Init log
-#
-our $defaultLog4perlConf = '
-log4perl.rootLogger              = TRACE, Screen
-log4perl.appender.Screen         = Log::Log4perl::Appender::Screen
-log4perl.appender.Screen.stderr  = 1
-log4perl.appender.Screen.layout  = PatternLayout
-log4perl.appender.Screen.layout.ConversionPattern = %d %-5p %6P %m{chomp}%n
-';
-Log::Log4perl::init(\$defaultLog4perlConf);
-Log::Any::Adapter->set('Log4perl');
 
 # ABSTRACT: XML 1.0 parser
 
@@ -50,30 +34,32 @@ XML 1.0 parser.
 
 =cut
 
+#
+# Main ESLIF object
+#
 my $ESLIF         = MarpaX::ESLIF->new($log);
-
+#
+# Grammar for BOM detection
+#
 my $BOM_SOURCE    = ${__PACKAGE__->section_data('BOM')};
 my $BOM_GRAMMAR   = MarpaX::ESLIF::Grammar->new($ESLIF, $BOM_SOURCE);
-
+#
+# Grammar for encoding guess
+#
 my $GUESS_SOURCE  = ${__PACKAGE__->section_data('Guess')};
 my $GUESS_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $GUESS_SOURCE);
-
+#
+# Main XML 1.0 grammar
+#
 my $XML10_SOURCE  = ${__PACKAGE__->section_data('XML 1.0')};
+my $XML10_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $XML10_SOURCE);
+#
+# Grammar for XMLDecl. Shared with XML 1.0 grammar, just that its start symbol
+# is different, and it has specific actions.
+#
 my $DECL_SOURCE   = ":start ::= XMLDecl\n$XML10_SOURCE";
 $DECL_SOURCE      =~ s/## Decl_//g; # Enable specific decl actions
 my $DECL_GRAMMAR  = MarpaX::ESLIF::Grammar->new($ESLIF, $DECL_SOURCE);
-
-$XML10_SOURCE = ":default ::= action        => defaultRuleAction\n$XML10_SOURCE";
-my $XML10_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $XML10_SOURCE);
-
-#
-# XML grammar is highly recursive on "element": since we are doing SAX stuff, no
-# need to impose that to the grammar. Take care we want to start the element
-# EXACTLY when there is a start tag. This is why '<' is expressed in the form
-# of the STAG lexeme. The end with at ETag completion.
-#
-my $ELEMENT_SOURCE   = ":start ::= element\n$XML10_SOURCE";
-my $ELEMENT_GRAMMAR  = MarpaX::ESLIF::Grammar->new($ESLIF, $ELEMENT_SOURCE);
 
 sub new {
     my ($class, %options) = @_;
@@ -86,7 +72,9 @@ sub new {
 
 sub _log_filter {
     my ($category, $level, $msg) = @_;
-
+    #
+    # We silent logging when doing encoding detection
+    #
     return if $MarpaX::ESLIF::XML::Silent;
     return $msg;
 }
@@ -95,7 +83,7 @@ sub _charset_from_bom {
     my ($self, $encode) = @_;
 
     local $MarpaX::ESLIF::XML::Silent = 1;
-    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1);
+    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1);
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::BOM->new();
 
     if ($BOM_GRAMMAR->parse($recognizerInterface, $valueInterface)) {
@@ -139,7 +127,7 @@ sub _charset_from_guess {
     my ($self, $encode) = @_;
 
     local $MarpaX::ESLIF::XML::Silent = 1;
-    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1);
+    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1);
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Guess->new();
 
     if ($GUESS_GRAMMAR->parse($recognizerInterface, $valueInterface)) {
@@ -160,7 +148,7 @@ sub _charset_from_decl {
     my ($self, $encode) = @_;
 
     local $MarpaX::ESLIF::XML::Silent = 1;
-    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1, isCharacterStream => 1);
+    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1, isCharacterStream => 1);
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::Decl->new();
 
     if ($DECL_GRAMMAR->parse($recognizerInterface, $valueInterface)) {
@@ -263,7 +251,7 @@ sub parse {
     # XML itself
     #
     $encode = MarpaX::ESLIF::XML::Encode->new(from_init => $from_init, from => $charset, to => 'UTF-8');
-    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, newline => 1);
+    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(encode => $encode, reader => $self->{reader}, newline => 1);
     my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new($XML10_GRAMMAR, $recognizerInterface);
     #
     # Because of events, we use explicitly the recognizer.
@@ -463,7 +451,6 @@ SDDecl             ::= S 'standalone' Eq "'" <yes or no> "'"
 event element$ = completed element
 element            ::= EmptyElemTag
                      | STag content ETag
-#                     | ELEMENT_JUMP                                    # A lexeme that never matches, used to skip consumed bytes
 event STag$ = completed STag
 STag               ::= STAG Name <STag1 any> <S maybe> '>'
 event Attribute$ = completed Attribute
@@ -732,11 +719,6 @@ event EncName_trailer_any$ = completed <EncName trailer any>
 # :lexeme ::= STAG pause => before event => ^STAG
 :lexeme ::= STAG pause => after event => STAG$
 STAG                        ~ '<'
-
-##################
-# For element jump
-##################
-ELEMENT_JUMP                ~ [^\s\S]:u
 
 ################
 # XML Exceptions

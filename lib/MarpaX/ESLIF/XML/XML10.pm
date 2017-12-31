@@ -3,6 +3,7 @@ use warnings FATAL => 'all';
 
 package MarpaX::ESLIF::XML::XML10;
 use Carp qw/croak/;
+use Data::HexDump qw/HexDump/;
 use Data::Section -setup;
 use I18N::Charset qw/iana_charset_name/;
 use Log::Any '$log', filter => \&_log_filter;
@@ -58,11 +59,12 @@ my $GUESS_SOURCE  = ${__PACKAGE__->section_data('Guess')};
 my $GUESS_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $GUESS_SOURCE);
 
 my $XML10_SOURCE  = ${__PACKAGE__->section_data('XML 1.0')};
-my $XML10_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $XML10_SOURCE);
-
 my $DECL_SOURCE   = ":start ::= XMLDecl\n$XML10_SOURCE";
 $DECL_SOURCE      =~ s/## Decl_//g; # Enable specific decl actions
 my $DECL_GRAMMAR  = MarpaX::ESLIF::Grammar->new($ESLIF, $DECL_SOURCE);
+
+$XML10_SOURCE = ":default ::= action        => defaultRuleAction\n$XML10_SOURCE";
+my $XML10_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $XML10_SOURCE);
 
 #
 # XML grammar is highly recursive on "element": since we are doing SAX stuff, no
@@ -262,10 +264,9 @@ sub parse {
     #
     $encode = MarpaX::ESLIF::XML::Encode->new(from_init => $from_init, from => $charset, to => 'UTF-8');
     my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, newline => 1);
-    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
     my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new($XML10_GRAMMAR, $recognizerInterface);
     #
-    # Because of SAX events, we use explicitly the recognizer.
+    # Because of events, we use explicitly the recognizer.
     #
     if ($eslifRecognizer->scan()) {
         $self->_manage_events($eslifRecognizer, $recognizerInterface, $encode);
@@ -275,7 +276,12 @@ sub parse {
         }
     }
 
-    return MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value();
+    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
+    my $value = MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value();
+    my $result = $valueInterface->getResult;
+
+    $log->debugf('XML result: %s', $result);
+    return $result
 }
 
 sub _manage_events {
@@ -290,6 +296,7 @@ sub _manage_events {
         my $symbol = $_->{symbol};
 
         my $input = $eslifRecognizer->input // '';
+        $input =~ s/\s/ /;
         $log->debugf('[%s] Event %s on symbol %s', substr($input, 0, 16), $event, $symbol);
         if ($event eq 'PITarget$') {
             my $value = $eslifRecognizer->lexemeLastPause($symbol);
@@ -303,41 +310,52 @@ sub _manage_events {
                 }
             }
         } elsif ($event eq '^STAG') {
-            $log->debugf('Parsing element separately');
             #
-            # We get in return the input buffer just after element valuation
+            # We get in return the UTF-8 buffer just after element valuation
             #
-            my ($value, $utf8bytes_consumed) = $self->parse_element($eslifRecognizer, $encode);
-            $log->debugf('Last element parsing has consumed %d bytes', $utf8bytes_consumed);
+            my ($value, $utf8buffer) = $self->parse_element($eslifRecognizer, $encode);
+            $log->debugf('Element value: %s', $value);
             #
-            # We say to recognizer to jump over them
+            # We recuperate current recognizer's input buffer
             #
-            $eslifRecognizer->lexemeRead('ELEMENT', $value, $utf8bytes_consumed);
+            my $input = $eslifRecognizer->input;
+            my $inputl = bytes::length($input) // 0;
+            #
+            # We say to encoder to replace its "to_init" with lef-over utf8 bytes
+            #
+            $encode->to_init($utf8buffer);
+            #
+            # and jump over ELEMENT_JUMP, consuming totally all recognizer's bytes
+            #
+            $eslifRecognizer->lexemeRead('ELEMENT_JUMP', $value, $inputl);
         } elsif ($event eq 'ETag$') {
-            $log->debug('Current Element end');
-            return;
+            # $log->debug('Current Element end');
+            # return;
         }
     }
 }
 
 sub parse_element {
     my ($self, $eslifRecognizerParent, $encode) = @_;
+
+    $log->debug("Parsing element");
     #
     # Current settings
     #
-    $encode = MarpaX::ESLIF::XML::Encode->new(from => $encode->from, to_remember => 1, to => 'UTF-8', to_init => $eslifRecognizerParent->input());
+    my $input = $eslifRecognizerParent->input;
+    $log->debugf("Input bytes:\n%s", HexDump(substr($input, 0, 16))) if defined($input);
+    $encode = MarpaX::ESLIF::XML::Encode->new(from => $encode->from, to_remember => 1, to => 'UTF-8', to_init => $input);
     #
     # element itself
     #
     my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1, isWithTrack => 1, newline => 1);
-    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
     my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new($ELEMENT_GRAMMAR, $recognizerInterface);
     #
-    # element starts with STAG on which there is a predicted event. It is guaranteed to there. In UTF-8 this is a single byte.
+    # element starts with STAG on which there is a predicted event. It is guaranteed to be there. In UTF-8 this is a single byte.
     #
     $eslifRecognizer->lexemeRead('STAG', '<', 1);
     #
-    # Because of SAX events, we use explicitly the recognizer.
+    # Because of events, we use explicitly the recognizer.
     #
     if ($eslifRecognizer->scan()) {
         $self->_manage_events($eslifRecognizer, $recognizerInterface, $encode);
@@ -346,20 +364,19 @@ sub parse_element {
             $self->_manage_events($eslifRecognizer, $recognizerInterface, $encode);
         }
     }
+    $log->debug('Recognizer state:');
+    $eslifRecognizer->progressLog(-1, -1, MarpaX::ESLIF::Logger::Level->GENERICLOGGER_LOGLEVEL_INFO);
 
-    my @location = $eslifRecognizer->lastCompletedLocation('element');
-    $log->debugf("Last element location: %s", \@location);
-    die "Start location of last element should be 0..." if $location[0];
-
-    my $to_bookkeeping = $encode->to_bookkeeping();
-    my $inputInUtf8 = substr($to_bookkeeping, $location[0], $location[1]);
-    $log->debugf("Calling for value on:\n%s", $inputInUtf8);
-
-    my $value = MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value() // croak "Parse failure";
+    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
+    my $value = MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface);
     #
-    # We return the value and the number of UTF-8 bytes consumed
+    # We return the value and this recognizer's remaining UTF-8 bytes
     #
-    return ($value, $location[1])
+    my $result = $valueInterface->getResult;
+    my $remaining = $eslifRecognizer->input;
+    $log->debugf('Element result: %s', $result);
+    $log->debugf("Remaining bytes:\n%s", HexDump(substr($input, 0, 16))) if defined($remaining);
+    return ($result, $input)
 }
 
 1;
@@ -407,7 +424,7 @@ __[ XML 1.0 ]__
 event document$ = completed document
 document           ::= prolog element <Misc any>
 event Char$ = completed Char
-Char               ::= [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+Char               ::= [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u name => Char
 event S1$ = completed S1
 S1                 ::= [\x{20}\x{9}\x{D}\x{A}]:u
 event S$ = completed S
@@ -425,15 +442,19 @@ Nmtoken            ::= NameChar+
 event Nmtokens$ = completed Nmtokens
 Nmtokens           ::= Nmtoken+ separator => [\x{20}]:u
 event EntityValue$ = completed EntityValue
-EntityValue        ::= '"' <EntityValue1 any>   '"' | "'" <EntityValue2 any>   "'"
+EntityValue        ::= '"' <EntityValue1 any>   '"'
+                     | "'" <EntityValue2 any>   "'"
 event AttValue$ = completed AttValue
-AttValue           ::= '"' <AttValue1 any>      '"' | "'" <AttValue2 any>      "'"
+AttValue           ::= '"' <AttValue1 any>      '"'
+                     | "'" <AttValue2 any>      "'"
 event SystemLiteral$ = completed SystemLiteral
-SystemLiteral      ::= '"' <SystemLiteral1 any> '"' | "'" <SystemLiteral2 any> "'"
+SystemLiteral      ::= '"' <SystemLiteral1 any> '"'
+                     | "'" <SystemLiteral2 any> "'"
 event PubidLiteral$ = completed PubidLiteral
-PubidLiteral       ::= '"' <PubidChar1 any>     '"' | "'" <PubidChar2 any>     "'"
+PubidLiteral       ::= '"' <PubidChar1 any>     '"'
+                     | "'" <PubidChar2 any>     "'"
 event PubidChar$ = completed PubidChar
-PubidChar          ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-'()+,./:=?;!*#@$_%]
+PubidChar          ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-'()+,./:=?;!*#@$_%]:u
 event CharData$ = completed CharData
 CharData           ::= <CharData Exceptioned>
 event Comment$ = completed Comment
@@ -502,8 +523,8 @@ SDDecl             ::= S 'standalone' Eq "'" <yes or no> "'"
                      | S 'standalone' Eq '"' <yes or no> '"'
 event element$ = completed element
 element            ::= EmptyElemTag
-                     | STag content ETag
-                     | ELEMENT                                    # A lexeme that never matches, used to skip consumed bytes
+                     | STag content ETag action => jdd
+#                     | ELEMENT_JUMP                                    # A lexeme that never matches, used to skip consumed bytes
 event STag$ = completed STag
 STag               ::= STAG Name <STag1 any> <S maybe> '>'
 event Attribute$ = completed Attribute
@@ -583,7 +604,8 @@ event CharRef$ = completed CharRef
 CharRef            ::= '&#' <digit many> ';'
                      | '&#x' <hexdigit many> ';'
 event Reference$ = completed Reference
-Reference          ::= EntityRef | CharRef
+Reference          ::= EntityRef
+                     | CharRef
 event EntityRef$ = completed EntityRef
 EntityRef          ::= '&' Name ';'
 event PEReference$ = completed PEReference
@@ -625,25 +647,31 @@ event Misc_any$ = completed <Misc any>
 event NameChar_any$ = completed <NameChar any>
 <NameChar any>            ::= NameChar*
 event EntityValue1$ = completed <EntityValue1>
-<EntityValue1>            ::= [^%&"] | PEReference | Reference
+<EntityValue1>            ::= [^%&"]:u
+                            | PEReference
+                            | Reference
 event EntityValue2$ = completed <EntityValue2>
-<EntityValue2>            ::= [^%&'] | PEReference | Reference
+<EntityValue2>            ::= [^%&']:u
+                            | PEReference
+                            | Reference
 event EntityValue1_any$ = completed <EntityValue1 any>
 <EntityValue1 any>        ::= <EntityValue1>*
 event EntityValue2_any$ = completed <EntityValue2 any>
 <EntityValue2 any>        ::= <EntityValue2>*
 event AttValue1$ = completed <AttValue1>
-<AttValue1>               ::= [^<&"] | Reference
+<AttValue1>               ::= [^<&"]:u
+                            | Reference
 event AttValue2$ = completed <AttValue2>
-<AttValue2>               ::= [^<&'] | Reference
+<AttValue2>               ::= [^<&']:u
+                            | Reference
 event AttValue1_any$ = completed <AttValue1 any>
 <AttValue1 any>           ::= <AttValue1>*
 event AttValue2_any$ = completed <AttValue2 any>
 <AttValue2 any>           ::= <AttValue2>*
 event SystemLiteral1$ = completed <SystemLiteral1>
-<SystemLiteral1>          ::= [^"]
+<SystemLiteral1>          ::= [^"]:u
 event SystemLiteral2$ = completed <SystemLiteral2>
-<SystemLiteral2>          ::= [^']
+<SystemLiteral2>          ::= [^']:u
 event SystemLiteral1_any$ = completed <SystemLiteral1 any>
 <SystemLiteral1 any>      ::= <SystemLiteral1>*
 event SystemLiteral2_any$ = completed <SystemLiteral2 any>
@@ -651,7 +679,7 @@ event SystemLiteral2_any$ = completed <SystemLiteral2 any>
 event PubidChar1_any$ = completed <PubidChar1 any>
 <PubidChar1 any>          ::= PubidChar*
 event PubidChar2$ = completed <PubidChar2>
-<PubidChar2>              ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-()+,./:=?;!*#@$_%]  # Same as PubidChar but without '
+<PubidChar2>              ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-()+,./:=?;!*#@$_%]:u  # Same as PubidChar but without '
 event PubidChar2_any$ = completed <PubidChar2 any>
 <PubidChar2 any>          ::= <PubidChar2>*
 event XMLDecl_maybe$ = completed <XMLDecl maybe>
@@ -667,11 +695,11 @@ event S_maybe$ = completed <S maybe>
 <S maybe>                 ::= S
 <S maybe>                 ::= 
 event digit$ = completed <digit>
-<digit>                   ::= [0-9]
+<digit>                   ::= [0-9]:u
 event digit_many$ = completed <digit many>
 <digit many>              ::= <digit>+
 event hexdigit$ = completed <hexdigit>
-<hexdigit>                ::= [0-9a-fA-F]
+<hexdigit>                ::= [0-9a-fA-F]:u
 event hexdigit_many$ = completed <hexdigit many>
 <hexdigit many>           ::= <hexdigit>+
 event intSubset1$ = completed <intSubset1>
@@ -750,22 +778,23 @@ event TextDecl_maybe$ = completed <TextDecl maybe>
 <TextDecl maybe>          ::= TextDecl
 <TextDecl maybe>          ::=
 event EncName_header$ = completed <EncName header>
-<EncName header>          ::= [A-Za-z]
+<EncName header>          ::= [A-Za-z]:u
 event EncName_trailer$ = completed <EncName trailer>
-<EncName trailer>         ::= [A-Za-z0-9._-]
+<EncName trailer>         ::= [A-Za-z0-9._-]:u
 event EncName_trailer_any$ = completed <EncName trailer any>
 <EncName trailer any>     ::= <EncName trailer>*
 
 #############################
 # For element start detection
 #############################
-:lexeme ::= STAG pause => before event => ^STAG
+# :lexeme ::= STAG pause => before event => ^STAG
+:lexeme ::= STAG pause => after event => STAG$
 STAG                        ~ '<'
 
 ##################
 # For element jump
 ##################
-ELEMENT                     ~ [\s\S]
+ELEMENT_JUMP                ~ [^\s\S]:u
 
 ################
 # XML Exceptions
@@ -804,7 +833,7 @@ event PI_Exceptioned$ = completed <PI Exceptioned>
 # <NAMECHAR>                ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
 # <NAMECHAR any>            ~ <NAMECHAR>*
 # <NAME>                    ~ <NAMESTARTCHAR> <NAMECHAR any>
-# <XML>                     ~ [Xx] [Mm] [Ll]
+# <XML>                     ~ [Xx]:u [Mm]:u [Ll]:u
 # <PITarget>              ::= <NAME> - <XML>
 
 <NAMESTARTCHAR>           ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
@@ -840,7 +869,20 @@ event Ignore_Exceptioned$ = completed <Ignore Exceptioned>
 # Note that we made CharData not nullable.
 # No need for exception, because ']]>' is longer than <CharData Unit>
 #
-event CharData_Unit$ = completed <CharData Unit>
-<CharData Unit>         ::= [^<&]
-event CharData_Exceptioned$ = completed <CharData Exceptioned>
-<CharData Exceptioned>  ::= <CharData Unit>+
+# All text that is not markup constitutes the character data of the document, and since
+# a character data cannot contain markup characters (nor CDATA section-close delimiter)
+# we raise its priority.
+#
+<_CHARDATA UNIT>          ~ [^<&]:u
+<_CHARDATA UNIT ANY>      ~ <_CHARDATA UNIT>*
+<CHARDATA>                ~ <_CHARDATA UNIT ANY>
+<CHARDATA EXCEPTION>      ~ /.*\]\]>/u  # Faster with a regexp, because it works on an already matches area: <CHARDATA>, so no need to rematch <_CHARDATA UNIT ANY>
+
+:lexeme ::= CHARDATA pause => after event => CHARDATA$ priority => 1
+<CharData Exceptioned>  ::= <CHARDATA> - <CHARDATA EXCEPTION>
+
+#event CharData_Unit$ = completed <CharData Unit>
+#<CharData Unit>         ::= [^<&]:u
+#event CharData_Exceptioned$ = completed <CharData Exceptioned>
+#<CharData Exceptioned>  ::= <CharData Unit>+
+#

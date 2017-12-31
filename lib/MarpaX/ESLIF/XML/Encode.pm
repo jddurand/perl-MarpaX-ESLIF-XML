@@ -185,9 +185,45 @@ sub to_bookkeeping {
     return $self->{to_bookkeeping}
 }
 
-=head3 octets($self, $from_octets)
+=head3 from_init($self, $octets)
 
-Translates and returns the C<$from> octets converted from the C<from> charset to the C<to> charset, 
+Returns the "from_init" constructor argument, eventually setting it if $octets is given in parameters. Dangerous method.
+
+=cut
+
+sub from_init {
+    my $self = shift;
+
+    if (@_) {
+        my $octets = shift;
+        $log->tracef("Resetting 'from_init' with %d octets\n%s", bytes::length($octets));
+        return $self->{from_init} = $octets
+    } else {
+        return $self->{from_init}
+    }
+}
+
+=head3 to_init($self, $octets)
+
+Returns the "to_init" constructor argument, eventually setting it if $octets is given in parameters. Dangerous method.
+
+=cut
+
+sub to_init {
+    my $self = shift;
+
+    if (@_) {
+        my $octets = shift;
+        $log->tracef("Resetting 'to_init' with %d octets\n%s", bytes::length($octets));
+        return $self->{to_init} = $octets
+    } else {
+        return $self->{to_init}
+    }
+}
+
+=head3 to_bookkeeping($self)
+
+Returns eventual octets bookkeeping in the C<to> charset.
 
 =cut
 
@@ -200,28 +236,28 @@ sub from_to {
 
     if ($self->{isCharacterStream}) {
         $self->{decodeBuffer} .= $from_octets;
-        if ($log->is_trace) {
-            $log->tracef("Input octets in %s charset:\n%s", $self->{from}, HexDump($self->{decodeBuffer}));
-        }
+        #if ($log->is_trace) {
+        #    $log->tracef("Input octets in %s charset:\n%s", $self->{from}, HexDump($self->{decodeBuffer}));
+        #}
 
         $self->{encodeBuffer} .= $self->{from_enc}->decode($self->{decodeBuffer}, Encode::FB_QUIET);
-        if ($log->is_trace) {
-            $log->tracef("Input octets remaining after %s decode:\n%s", $self->{from}, HexDump($self->{decodeBuffer}));
-            $log->tracef("Intermediate octets in perl's internal format after %s encode:\n%s", $self->{from}, HexDump($self->{encodeBuffer}));
-        }
+        #if ($log->is_trace) {
+        #    $log->tracef("Input octets remaining after %s decode:\n%s", $self->{from}, HexDump($self->{decodeBuffer}));
+        #    $log->tracef("Intermediate octets in perl's internal format after %s encode:\n%s", $self->{from}, HexDump($self->{encodeBuffer}));
+        #}
 
         $to_octets = $self->{to_enc}->encode($self->{encodeBuffer}, Encode::FB_QUIET);
-        if ($log->is_trace) {
-            $log->tracef("Intermediate octets remaining after %s encode:\n%s", $self->{to}, HexDump($self->{encodeBuffer}));
-            $log->tracef("Output octets in %s charset:\n%s", $self->{to}, HexDump($to_octets));
-        }
+        #if ($log->is_trace) {
+        #    $log->tracef("Intermediate octets remaining after %s encode:\n%s", $self->{to}, HexDump($self->{encodeBuffer}));
+        #    $log->tracef("Output octets in %s charset:\n%s", $self->{to}, HexDump($to_octets));
+        #}
     } else {
         $self->{decodeBuffer} .= $from_octets;
         $to_octets = $self->{decodeBuffer};
         $self->{decodeBuffer} = undef;
-        if ($log->is_trace) {
-            $log->tracef("Output octets:\n%s", HexDump($to_octets));
-        }
+        #if ($log->is_trace) {
+        #    $log->tracef("Output octets:\n%s", HexDump($to_octets));
+        #}
     }
 
     $self->{to_bookkeeping} .= $to_octets if $self->{to_remember};
@@ -232,7 +268,7 @@ sub from_to {
     $self->{from_init} = undef;
     $self->{to_init} = undef;
 
-    $log->debugf("Output octets:\n%s", HexDump($to_octets));
+    # $log->debugf("Output octets:\n%s", HexDump($to_octets));
 
     return $to_octets
 }

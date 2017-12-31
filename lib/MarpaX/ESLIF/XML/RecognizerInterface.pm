@@ -332,9 +332,6 @@ Returns a true or a false value, indicating if threshold warning is on or off, r
 =cut
 
 sub isWithDisableThreshold {
-
-    $log->trace("disable threshold ? 0");
-
     return 0
 }
 

@@ -72,7 +72,7 @@ Returns a true or a false value, indicating if valuation should allow ambiguous 
 =cut
 
 sub isWithAmbiguous {
-    return 1
+    return 0
 }
 
 =head3 isWithNull
@@ -124,5 +124,19 @@ sub setResult {
 L<MarpaX::ESLIF::XML>
 
 =cut
+
+sub defaultRuleAction {
+    my $self = shift;
+
+    my $what = $MarpaX::ESLIF::Context::ruleName // $MarpaX::ESLIF::Context::symbolName;
+    return { $what => \@_ }
+}
+
+sub defaultSymbolAction {
+    my $self = shift;
+
+    my $what = $MarpaX::ESLIF::Context::ruleName // $MarpaX::ESLIF::Context::symbolName;
+    return { $what => \@_ }
+}
 
 1;

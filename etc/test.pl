@@ -48,21 +48,24 @@ use diagnostics;
 use Log::Log4perl qw/:easy/;
 use Log::Any::Adapter;
 use Log::Any qw/$log/;
-use MarpaX::ESLIF::XML::XML10;
-use Try::Tiny;
 
-#
-# Init log
-#
-our $defaultLog4perlConf = '
-log4perl.rootLogger              = TRACE, Screen
+BEGIN {
+    #
+    # Init log
+    #
+    our $defaultLog4perlConf = '
+log4perl.rootLogger              = INFO, Screen
 log4perl.appender.Screen         = Log::Log4perl::Appender::Screen
 log4perl.appender.Screen.stderr  = 1
 log4perl.appender.Screen.layout  = PatternLayout
 log4perl.appender.Screen.layout.ConversionPattern = %d %-5p %6P %m{chomp}%n
-';
-Log::Log4perl::init(\$defaultLog4perlConf);
-Log::Any::Adapter->set('Log4perl');
+        ';
+    Log::Log4perl::init(\$defaultLog4perlConf);
+    Log::Any::Adapter->set('Log4perl');
+}
+
+use MarpaX::ESLIF::XML::XML10;
+use Try::Tiny;
 
 #
 # Take care, this can contain UTF-8 stuff

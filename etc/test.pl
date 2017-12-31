@@ -21,7 +21,7 @@ sub DESTROY {
     my ($self) = @_;
 
     $log->tracef('Closing %s', $self->{filename});
-    close($self->{fh}) || warn sprintf('Failed to %s, %s', $self->{filename}, $!)
+    close($self->{fh}) || warn sprintf('Failed to close %s, %s', $self->{filename}, $!)
 }
 
 sub read {

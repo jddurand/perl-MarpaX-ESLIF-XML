@@ -5,7 +5,7 @@ package MarpaX::ESLIF::XML::XML10;
 use Carp qw/croak/;
 use Data::HexDump qw/HexDump/;
 use Data::Section -setup;
-use I18N::Charset qw/iana_charset_name/;
+use I18N::Charset qw/enco_charset_name/;
 use Log::Any '$log', filter => \&_log_filter;
 use MarpaX::ESLIF;
 use MarpaX::ESLIF::XML::RecognizerInterface;
@@ -130,7 +130,7 @@ sub _iana_charset {
     #
     # This should never fail
     #
-    my $charset = iana_charset_name($encoding) || croak "Failed to get charset name from $encoding";
+    my $charset = enco_charset_name($encoding) || croak "Failed to get charset name from $encoding";
 
     return $charset
 }
@@ -180,7 +180,7 @@ sub _charset_from_decl {
 sub _encoding {
     my ($self, $charset_from_bom, $charset_from_guess, $charset_from_decl) = @_;
 
-    $log->debugf("Merging encodings from BOM: %s, Guess: %s and Declaration: %s", $charset_from_bom, $charset_from_guess, $charset_from_decl);
+    $log->tracef("Merging encodings from BOM: %s, Guess: %s and Declaration: %s", $charset_from_bom, $charset_from_guess, $charset_from_decl);
     my $encoding;
     if (! defined($charset_from_bom)) {
         if (! defined($charset_from_guess) || ! defined($charset_from_decl)) {
@@ -240,25 +240,25 @@ sub parse {
     #
     my $encode = MarpaX::ESLIF::XML::Encode->new(from_remember => 1);
     ($charset_from_bom, $from_init) = $self->_charset_from_bom($encode);
-    $log->debugf("Encoding from BOM: %s, bookkeeping: %d bytes", $charset_from_bom, bytes::length($from_init));
+    $log->tracef("Encoding from BOM: %s, bookkeeping: %d bytes", $charset_from_bom, bytes::length($from_init));
     #
     # Guess
     #
     $encode = MarpaX::ESLIF::XML::Encode->new(from_remember => 1, from_init => $from_init);
     ($charset_from_guess, $from_init) = $self->_charset_from_guess($encode);
-    $log->debugf("Encoding from Guess: %s, bookkeeping: %d bytes", $charset_from_guess, bytes::length($from_init));
+    $log->tracef("Encoding from Guess: %s, bookkeeping: %d bytes", $charset_from_guess, bytes::length($from_init));
     #
     # Declaration
     #
     $encode = MarpaX::ESLIF::XML::Encode->new(from_remember => 1, from_init => $from_init, from => $charset_from_bom // $charset_from_guess);
     ($charset_from_decl, $from_init)  = $self->_charset_from_decl($encode);
-    $log->debugf("Encoding from Declaration: %s, bookkeeping: %d bytes", $charset_from_decl, bytes::length($from_init));
+    $log->tracef("Encoding from Declaration: %s, bookkeeping: %d bytes", $charset_from_decl, bytes::length($from_init));
     #
     # Algorithm "Raw XML charset encoding detection"
     # https://rometools.github.io/rome/RssAndAtOMUtilitiEsROMEV0.5AndAboveTutorialsAndArticles/XMLCharsetEncodingDetectionHowRssAndAtOMUtilitiEsROMEHelpsGettingTheRightCharsetEncoding.html
     #
     my $charset = $self->_encoding($charset_from_bom, $charset_from_guess, $charset_from_decl);
-    $log->debugf("Charset used: %s", $charset);
+    $log->tracef("Charset used: %s", $charset);
     #
     # XML itself
     #
@@ -268,6 +268,7 @@ sub parse {
     #
     # Because of events, we use explicitly the recognizer.
     #
+    $log->tracef('XML parse');
     if ($eslifRecognizer->scan()) {
         $self->_manage_events($eslifRecognizer, $recognizerInterface, $encode);
         while ($eslifRecognizer->isCanContinue) {
@@ -277,10 +278,12 @@ sub parse {
     }
 
     my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
+    $log->tracef('XML valuation');
+    $eslifRecognizer->progressLog(-1, -1,MarpaX::ESLIF::Logger::Level->GENERICLOGGER_LOGLEVEL_INFO);
     my $value = MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value();
     my $result = $valueInterface->getResult;
 
-    $log->debugf('XML result: %s', $result);
+    $log->tracef('XML result: %s', $result);
     return $result
 }
 
@@ -295,88 +298,21 @@ sub _manage_events {
         my $event = $_->{event};
         my $symbol = $_->{symbol};
 
-        my $input = $eslifRecognizer->input // '';
-        $input =~ s/\s/ /;
-        $log->debugf('[%s] Event %s on symbol %s', substr($input, 0, 16), $event, $symbol);
-        if ($event eq 'PITarget$') {
-            my $value = $eslifRecognizer->lexemeLastPause($symbol);
-            $log->debugf('Event %s on symbol %s, value: %s', $event, $symbol, $value);
-            if ($value =~ /^xml$/i) {
-                my @location = $eslifRecognizer->location();
-                if (@location) {
-                    croak "PITarget cannot be '$value' at line $location[0], column $location[1]";
-                } else {
-                    croak "PITarget cannot be '$value'";
-                }
-            }
-        } elsif ($event eq '^STAG') {
-            #
-            # We get in return the UTF-8 buffer just after element valuation
-            #
-            my ($value, $utf8buffer) = $self->parse_element($eslifRecognizer, $encode);
-            $log->debugf('Element value: %s', $value);
-            #
-            # We recuperate current recognizer's input buffer
-            #
-            my $input = $eslifRecognizer->input;
-            my $inputl = bytes::length($input) // 0;
-            #
-            # We say to encoder to replace its "to_init" with lef-over utf8 bytes
-            #
-            $encode->to_init($utf8buffer);
-            #
-            # and jump over ELEMENT_JUMP, consuming totally all recognizer's bytes
-            #
-            $eslifRecognizer->lexemeRead('ELEMENT_JUMP', $value, $inputl);
-        } elsif ($event eq 'ETag$') {
-            # $log->debug('Current Element end');
-            # return;
+        $log->tracef('Event <%s> on symbol %s', $event, $symbol);
+        if ($log->is_trace) {
+            my $input = $eslifRecognizer->input // '';
+            $input =~ s/\s/ /;
+            $log->tracef('[%s] Event %s on symbol %s', substr($input, 0, 16), $event, $symbol);
         }
     }
 }
 
-sub parse_element {
-    my ($self, $eslifRecognizerParent, $encode) = @_;
-
-    $log->debug("Parsing element");
-    #
-    # Current settings
-    #
-    my $input = $eslifRecognizerParent->input;
-    $log->debugf("Input bytes:\n%s", HexDump(substr($input, 0, 16))) if defined($input);
-    $encode = MarpaX::ESLIF::XML::Encode->new(from => $encode->from, to_remember => 1, to => 'UTF-8', to_init => $input);
-    #
-    # element itself
-    #
-    my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface2->new(encode => $encode, reader => $self->{reader}, isWithExhaustion => 1, isWithTrack => 1, newline => 1);
-    my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new($ELEMENT_GRAMMAR, $recognizerInterface);
-    #
-    # element starts with STAG on which there is a predicted event. It is guaranteed to be there. In UTF-8 this is a single byte.
-    #
-    $eslifRecognizer->lexemeRead('STAG', '<', 1);
-    #
-    # Because of events, we use explicitly the recognizer.
-    #
-    if ($eslifRecognizer->scan()) {
-        $self->_manage_events($eslifRecognizer, $recognizerInterface, $encode);
-        while ($eslifRecognizer->isCanContinue) {
-            last unless $eslifRecognizer->resume;
-            $self->_manage_events($eslifRecognizer, $recognizerInterface, $encode);
-        }
-    }
-    $log->debug('Recognizer state:');
-    $eslifRecognizer->progressLog(-1, -1, MarpaX::ESLIF::Logger::Level->GENERICLOGGER_LOGLEVEL_INFO);
-
-    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
-    my $value = MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface);
-    #
-    # We return the value and this recognizer's remaining UTF-8 bytes
-    #
-    my $result = $valueInterface->getResult;
-    my $remaining = $eslifRecognizer->input;
-    $log->debugf('Element result: %s', $result);
-    $log->debugf("Remaining bytes:\n%s", HexDump(substr($input, 0, 16))) if defined($remaining);
-    return ($result, $input)
+sub CLONE {
+    $ESLIF         = MarpaX::ESLIF->new($log);
+    $BOM_GRAMMAR   = MarpaX::ESLIF::Grammar->new($ESLIF, $BOM_SOURCE);
+    $GUESS_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $GUESS_SOURCE);
+    $DECL_GRAMMAR  = MarpaX::ESLIF::Grammar->new($ESLIF, $DECL_SOURCE);
+    $XML10_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $XML10_SOURCE);
 }
 
 1;
@@ -474,7 +410,10 @@ event prolog$ = completed prolog
 prolog             ::= <XMLDecl maybe> <Misc any>
                      | <XMLDecl maybe> <Misc any> doctypedecl <Misc any>
 event XMLDecl$ = completed XMLDecl
-XMLDecl            ::= '<?xml' VersionInfo <EncodingDecl maybe> <SDDecl maybe> <S maybe> '?>' ## Decl_action => ::copy[2]
+#
+# Note: it is important to split '<?xml' into '<?' 'xml' because of PI whose defintion is: '<?' PITarget
+#
+XMLDecl            ::= '<?' 'xml' VersionInfo <EncodingDecl maybe> <SDDecl maybe> <S maybe> '?>' ## Decl_action => ::copy[2]
 event VersionInfo$ = completed VersionInfo
 VersionInfo        ::= S 'version' Eq "'" VersionNum "'"
                      | S 'version' Eq '"' VersionNum '"'
@@ -523,7 +462,7 @@ SDDecl             ::= S 'standalone' Eq "'" <yes or no> "'"
                      | S 'standalone' Eq '"' <yes or no> '"'
 event element$ = completed element
 element            ::= EmptyElemTag
-                     | STag content ETag action => jdd
+                     | STag content ETag
 #                     | ELEMENT_JUMP                                    # A lexeme that never matches, used to skip consumed bytes
 event STag$ = completed STag
 STag               ::= STAG Name <STag1 any> <S maybe> '>'
@@ -628,7 +567,10 @@ ExternalID         ::= 'SYSTEM' S SystemLiteral
 event NDataDecl$ = completed NDataDecl
 NDataDecl          ::= S 'NDATA' S Name 
 event TextDecl$ = completed TextDecl
-TextDecl           ::= '<?xml' <VersionInfo maybe> EncodingDecl <S maybe> '?>'
+#
+# Note: it is important to split '<?xml' into '<?' 'xml' because of PI whose defintion is: '<?' PITarget
+#
+TextDecl           ::= '<?' 'xml' <VersionInfo maybe> EncodingDecl <S maybe> '?>'
 event extParsedEnt$ = completed extParsedEnt
 extParsedEnt       ::= <TextDecl maybe> content 
 event EncodingDecl$ = completed EncodingDecl
@@ -829,18 +771,23 @@ event PI_Exceptioned$ = completed <PI Exceptioned>
 # more user-friendly, saying that a PITarget cannot be 'xml':i more explicitly.
 # Since we will use events anyway because of SAX support, we add an explicit
 # event for PITarget
+<NAMESTARTCHAR>           ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
+<NAMECHAR>                ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
+<NAMECHAR any>            ~ <NAMECHAR>*
+<NAME>                    ~ <NAMESTARTCHAR> <NAMECHAR any>
+<XML>                     ~ [Xx]:u [Mm]:u [Ll]:u
+event PITarget$ = completed PITarget
+<PITarget>              ::= <NAME> - <XML>
+
+#
+# If you like to handle this in user-space, this could be... with an event on PITarget$, then getting lastLexemePause('PITarget'):
+#
 # <NAMESTARTCHAR>           ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
 # <NAMECHAR>                ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
 # <NAMECHAR any>            ~ <NAMECHAR>*
 # <NAME>                    ~ <NAMESTARTCHAR> <NAMECHAR any>
-# <XML>                     ~ [Xx]:u [Mm]:u [Ll]:u
-# <PITarget>              ::= <NAME> - <XML>
-
-<NAMESTARTCHAR>           ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}]:u
-<NAMECHAR>                ~ [:A-Z_a-z\x{C0}-\x{D6}\x{D8}-\x{F6}\x{F8}-\x{2FF}\x{370}-\x{37D}\x{37F}-\x{1FFF}\x{200C}-\x{200D}\x{2070}-\x{218F}\x{2C00}-\x{2FEF}\x{3001}-\x{D7FF}\x{F900}-\x{FDCF}\x{FDF0}-\x{FFFD}\x{10000}-\x{EFFFF}\-.0-9\x{B7}\x{0300}-\x{036F}\x{203F}-\x{2040}]:u
-<NAMECHAR any>            ~ <NAMECHAR>*
-:lexeme ::= PITarget pause => after event => PITarget$
-<PITarget>                ~ <NAMESTARTCHAR> <NAMECHAR any>
+# :lexeme ::= PITarget pause => after event => PITarget$
+# <PITarget>                ~ <NAME>
 
 #
 # ---------------------------------------

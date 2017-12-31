@@ -77,7 +77,7 @@ sub _get_enc {
 
     $ENC{$encname} //= find_encoding($encname);
 
-    return $ENC{$encname} // croak "Failed to find $encname encoding object"
+    return $ENC{$encname}
 }
 
 sub new {

@@ -138,7 +138,7 @@ Returns encoding information.
 sub encoding {
     my ($self) = @_;
 
-    return $self->{encode}->to
+    return $self->{encode}->from
 }
 
 =head3 isCharacterStream($self)

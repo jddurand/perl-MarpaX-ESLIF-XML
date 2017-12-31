@@ -4,7 +4,7 @@ use warnings FATAL => 'all';
 package MarpaX::ESLIF::XML::XML10;
 use Carp qw/croak/;
 use Data::Section -setup;
-use I18N::Charset qw/enco_charset_name/;
+use I18N::Charset qw/iana_charset_name/;
 use Log::Any '$log', filter => \&_log_filter;
 use MarpaX::ESLIF;
 use MarpaX::ESLIF::XML::RecognizerInterface;
@@ -124,13 +124,9 @@ sub _charset_for_encode_module {
         return 'UTF-16'
     }
     #
-    # Also I disagree that I18N::Charset would return utf8 when the input is utf-8
-    #
-    return 'UTF-8' if (lc($encoding) eq 'utf-8');
-    #
     # This should never fail
     #
-    my $charset = enco_charset_name($encoding) || croak "Failed to get charset name from $encoding";
+    my $charset = iana_charset_name($encoding) || croak "Failed to get charset name from $encoding";
 
     return uc($charset)  # Well, we always use the uppercased version, c.f. the dependency in _merge_charsets()
 }

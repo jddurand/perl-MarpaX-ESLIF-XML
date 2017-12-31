@@ -70,15 +70,19 @@ sub new {
     }, $class
 }
 
+#
+# We silent logging when doing encoding detection
+#
 sub _log_filter {
     my ($category, $level, $msg) = @_;
-    #
-    # We silent logging when doing encoding detection
-    #
+
     return if $MarpaX::ESLIF::XML::Silent;
     return $msg;
 }
 
+#
+# Get charset from BOM, eventually
+#
 sub _charset_from_bom {
     my ($self, $encode) = @_;
 
@@ -104,6 +108,9 @@ sub _charset_from_bom {
     return (undef, $encode->from_bookkeeping())
 }
 
+#
+# Return a charset suitable for the Encode module
+#
 sub _iana_charset {
     my ($self, $encoding) = @_;
 
@@ -123,6 +130,9 @@ sub _iana_charset {
     return $charset
 }
 
+#
+# Get charset from first bytes, eventually
+#
 sub _charset_from_guess {
     my ($self, $encode) = @_;
 
@@ -144,6 +154,9 @@ sub _charset_from_guess {
     return (undef, $encode->from_bookkeeping())
 }
 
+#
+# Get charset from XMLDecl, eventually
+#
 sub _charset_from_decl {
     my ($self, $encode) = @_;
 
@@ -165,21 +178,25 @@ sub _charset_from_decl {
     return (undef, $encode->from_bookkeeping())
 }
 
-sub _encoding {
+#
+# This is the "Raw XML charset encoding detection" as per rometools, extended to UTF-32.
+# C.f. https://rometools.github.io/rome/RssAndAtOMUtilitiEsROMEV0.5AndAboveTutorialsAndArticles/XMLCharsetEncodingDetectionHowRssAndAtOMUtilitiEsROMEHelpsGettingTheRightCharsetEncoding.html
+#
+sub _merge_charsets {
     my ($self, $charset_from_bom, $charset_from_guess, $charset_from_decl) = @_;
 
     $log->tracef("Merging encodings from BOM: %s, Guess: %s and Declaration: %s", $charset_from_bom, $charset_from_guess, $charset_from_decl);
-    my $encoding;
+    my $charset;
     if (! defined($charset_from_bom)) {
         if (! defined($charset_from_guess) || ! defined($charset_from_decl)) {
-            $encoding = 'UTF-8';
+            $charset = 'UTF-8';
         } else {
             if (($charset_from_decl eq 'UTF-16') && ($charset_from_guess eq 'UTF-16BE' || $charset_from_guess eq 'UTF-16LE')) {
-                $encoding =  $charset_from_guess;
+                $charset =  $charset_from_guess;
             } elsif (($charset_from_decl eq 'UTF-32') && ($charset_from_guess eq 'UTF-32BE' || $charset_from_guess eq 'UTF-32LE')) {
-                $encoding =  $charset_from_guess;
+                $charset =  $charset_from_guess;
             } else {
-                $encoding = $charset_from_decl;
+                $charset = $charset_from_decl;
             }
         }
     } else {
@@ -190,7 +207,7 @@ sub _encoding {
             if (defined($charset_from_decl) && $charset_from_decl ne 'UTF-8') {
                 croak "Encoding mismatch between BOM $charset_from_bom and declaration $charset_from_decl";
             }
-            $encoding = 'UTF-8';
+            $charset = 'UTF-8';
         } else {
             if ($charset_from_bom eq 'UTF-16BE' or $charset_from_bom eq 'UTF-16LE') {
                 if (defined($charset_from_guess) && $charset_from_guess ne $charset_from_bom) {
@@ -199,7 +216,7 @@ sub _encoding {
                 if (defined($charset_from_decl) && ($charset_from_decl ne 'UTF-16' and $charset_from_decl ne $charset_from_bom)) {
                     croak "Encoding mismatch between BOM $charset_from_bom and declaration $charset_from_decl";
                 }
-                $encoding = $charset_from_bom;
+                $charset = $charset_from_bom;
             } elsif ($charset_from_bom eq 'UTF-32BE' or $charset_from_bom eq 'UTF-32LE') {
                 if (defined($charset_from_guess) && $charset_from_guess ne $charset_from_bom) {
                     croak "Encoding mismatch between BOM $charset_from_bom and guess $charset_from_guess";
@@ -207,20 +224,21 @@ sub _encoding {
                 if (defined($charset_from_decl) && ($charset_from_decl ne 'UTF-32' and $charset_from_decl ne $charset_from_bom)) {
                     croak "Encoding mismatch between BOM $charset_from_bom and declaration $charset_from_decl";
                 }
-                $encoding = $charset_from_bom;
+                $charset = $charset_from_bom;
             } else {
                 croak 'Encoding setup failed';
             }
         }
     }
 
-    return $encoding
+    $log->tracef("Charset from merge is: %s", $charset);
+    return $charset
 }
 
 sub parse {
     my ($self) = @_;
     #
-    # Get encoding from BOM, guess and declaration. We remember octets already read at every step
+    # Get charsets from BOM, guess and declaration. We remember octets already read at every step
     #
     my ($charset_from_bom, $charset_from_guess, $charset_from_decl, $from_init);
     #
@@ -245,8 +263,7 @@ sub parse {
     # Algorithm "Raw XML charset encoding detection"
     # https://rometools.github.io/rome/RssAndAtOMUtilitiEsROMEV0.5AndAboveTutorialsAndArticles/XMLCharsetEncodingDetectionHowRssAndAtOMUtilitiEsROMEHelpsGettingTheRightCharsetEncoding.html
     #
-    my $charset = $self->_encoding($charset_from_bom, $charset_from_guess, $charset_from_decl);
-    $log->tracef("Charset used: %s", $charset);
+    my $charset = $self->_merge_charsets($charset_from_bom, $charset_from_guess, $charset_from_decl);
     #
     # XML itself
     #
@@ -271,7 +288,7 @@ sub parse {
     my $value = MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value();
     my $result = $valueInterface->getResult;
 
-    $log->tracef('XML result: %s', $result);
+    $log->tracef("XML valuation result:\n%s", $result);
     return $result
 }
 
@@ -401,7 +418,7 @@ event XMLDecl$ = completed XMLDecl
 #
 # Note: it is important to split '<?xml' into '<?' 'xml' because of PI whose defintion is: '<?' PITarget
 #
-XMLDecl            ::= '<?' 'xml' VersionInfo <EncodingDecl maybe> <SDDecl maybe> <S maybe> '?>' ## Decl_action => ::copy[2]
+XMLDecl            ::= '<?' 'xml' VersionInfo <EncodingDecl maybe> <SDDecl maybe> <S maybe> '?>' ## Decl_action => ::copy[3]
 event VersionInfo$ = completed VersionInfo
 VersionInfo        ::= S 'version' Eq "'" VersionNum "'"
                      | S 'version' Eq '"' VersionNum '"'
@@ -615,7 +632,7 @@ event XMLDecl_maybe$ = completed <XMLDecl maybe>
 <XMLDecl maybe>           ::= XMLDecl
 <XMLDecl maybe>           ::=
 event EncodingDecl_maybe$ = completed <EncodingDecl maybe>
-<EncodingDecl maybe>      ::= EncodingDecl ## Decl_action => ::shift
+<EncodingDecl maybe>      ::= EncodingDecl
 <EncodingDecl maybe>      ::=
 event SDDecl_maybe$ = completed <SDDecl maybe>
 <SDDecl maybe>            ::= SDDecl

@@ -100,7 +100,7 @@ sub _charset_from_bom {
         # ... Minus the number of bytes used by the BOM
         #
         substr($bookkeeping, 0, $bytes, '');
-        my $charset = $self->_iana_charset($encoding);
+        my $charset = $self->_charset_for_encode_module($encoding);
 
         return ($charset, $bookkeeping)
     }
@@ -111,7 +111,7 @@ sub _charset_from_bom {
 #
 # Return a charset suitable for the Encode module
 #
-sub _iana_charset {
+sub _charset_for_encode_module {
     my ($self, $encoding) = @_;
 
     return undef unless defined($encoding);
@@ -123,11 +123,15 @@ sub _iana_charset {
         return 'UTF-16'
     }
     #
+    # Also I disagree that I18N::Charset would return utf8 when the input is utf-8
+    #
+    return 'UTF-8' if (lc($encoding) eq 'utf-8');
+    #
     # This should never fail
     #
     my $charset = enco_charset_name($encoding) || croak "Failed to get charset name from $encoding";
 
-    return $charset
+    return uc($charset)  # Well, we always use the uppercased version, c.f. the dependency in _merge_charsets()
 }
 
 #
@@ -146,7 +150,7 @@ sub _charset_from_guess {
         # Get data that has to be reinjected
         #
         my $bookkeeping = $encode->from_bookkeeping();
-        my $charset = $self->_iana_charset($encoding);
+        my $charset = $self->_charset_for_encode_module($encoding);
 
         return ($charset, $bookkeeping)
     }
@@ -170,7 +174,7 @@ sub _charset_from_decl {
         # Get data that has to be reinjected
         #
         my $bookkeeping = $encode->from_bookkeeping();
-        my $charset = $self->_iana_charset($encoding);
+        my $charset = $self->_charset_for_encode_module($encoding);
 
         return ($charset, $bookkeeping)
     }

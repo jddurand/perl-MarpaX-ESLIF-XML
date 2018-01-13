@@ -86,20 +86,22 @@ So when later on the grammar says, e.g. for CharData: `[^<&]`, we _could_ read: 
 ```
 [9] EntityValue     ::= '"' ([^%&"] | PEReference | Reference)* '"' /* " == #x22, % == #x25, & == #x26 */
                       | "'" ([^%&'] | PEReference | Reference)* "'" /* % == #x25, & == #x26, ' == #x27 */
-[10] AttValue       ::= '"' ([^<&"] | Reference)* '"'               /* " == #x22, % == #x25, & == #x26 */
-                      | "'" ([^<&'] | Reference)* "'"               /* % == #x25, & == #x26, ' == #x27 */
+[10] AttValue       ::= '"' ([^<&"] | Reference)* '"'               /* " == #x22, & == #x26, < == #x3c */
+                      | "'" ([^<&'] | Reference)* "'"               /* & == #x26, ' == #x27, < == #x3c */
 [11] SystemLiteral  ::= '"' [^"]* '"'                               /* " == #x22 */
                       | "'" [^']* "'"                               /* ' == #x27 */
 
 becomes:
 
-[9a] EntityOrAttValueDQInner ::= #x9 | #xA | #xD | [#x20-#x21] | [#x23-#x24] | [#x27-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
-[9b] EntityOrAttValueSQInner ::= #x9 | #xA | #xD | [#x20-#x24] |               [#x28-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+[9a] EntityValueDQInner      ::= #x9 | #xA | #xD | [#x20-#x21] | [#x23-#x24] | [#x27-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+[9b] EntityValueSQInner      ::= #x9 | #xA | #xD | [#x20-#x24] |               [#x28-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+[9]  EntityValue             ::= '"' (EntityValueDQInner | PEReference | Reference)* '"'
+                               | "'" (EntityValueSQInner | PEReference | Reference)* "'"
 
-[9] EntityValue              ::= '"' (EntityOrAttValueDQInner | PEReference | Reference)* '"'
-                               | "'" (EntityOrAttValueSQInner | PEReference | Reference)* "'"
-[10] AttValue                ::= '"' (EntityOrAttValueDQInner | Reference)* '"'
-                               | "'" (EntityOrAttValueSQInner | Reference)* "'"
+[10a] AttValueDQInner        ::= #x9 | #xA | #xD | [#x20-#x21] | [#x23-#x25] | [#x27-#x3b] | [#x3d-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+[10b] AttValueSQInner        ::= #x9 | #xA | #xD | [#x20-#x25] | [#x28-#x3b]               | [#x3d-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+[10]  AttValue               ::= '"' (AttValueDQInner | Reference)* '"'
+                               | "'" (AttValueSQInner | Reference)* "'"
 
 [11a] SystemLiteralDQInner   ::= #x9 | #xA | #xD | [#x20-#x21] | [#x23-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
 [11b] SystemLiteralSQInner   ::= #x9 | #xA | #xD | [#x20-#x26] | [#x28-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]

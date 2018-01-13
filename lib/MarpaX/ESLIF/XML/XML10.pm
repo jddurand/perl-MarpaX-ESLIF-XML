@@ -295,8 +295,8 @@ sub parse {
     my $result = $valueInterface->getResult;
 
     $log->tracef("XML valuation result:\n%s", $result);
-    use Devel::Peek;
-    Dump($result);
+    # use Devel::Peek;
+    # Dump($result);
     return $result
 }
 
@@ -601,11 +601,11 @@ event Misc_any$ = completed <Misc any>
 event NameChar_any$ = completed <NameChar any>
 <NameChar any>            ::= NameChar*
 event EntityValue1$ = completed <EntityValue1>
-<EntityValue1>            ::= EntityOrAttValueDQInner
+<EntityValue1>            ::= EntityValueDQInner
                             | PEReference
                             | Reference
 event EntityValue2$ = completed <EntityValue2>
-<EntityValue2>            ::= EntityOrAttValueSQInner
+<EntityValue2>            ::= EntityValueSQInner
                             | PEReference
                             | Reference
 event EntityValue1_any$ = completed <EntityValue1 any>
@@ -613,10 +613,10 @@ event EntityValue1_any$ = completed <EntityValue1 any>
 event EntityValue2_any$ = completed <EntityValue2 any>
 <EntityValue2 any>        ::= <EntityValue2>*
 event AttValue1$ = completed <AttValue1>
-<AttValue1>               ::= EntityOrAttValueDQInner
+<AttValue1>               ::= AttValueDQInner
                             | Reference
 event AttValue2$ = completed <AttValue2>
-<AttValue2>               ::= EntityOrAttValueSQInner
+<AttValue2>               ::= AttValueSQInner
                             | Reference
 event AttValue1_any$ = completed <AttValue1 any>
 <AttValue1 any>           ::= <AttValue1>*
@@ -741,10 +741,14 @@ event EncName_trailer_any$ = completed <EncName trailer any>
 #############################
 # Grammar subtilities
 #############################
-event EntityOrAttValueDQInner$ = completed <EntityOrAttValueDQInner>
-<EntityOrAttValueDQInner> ::= [\x{9}\x{A}\x{D}\x{20}-\x{21}\x{23}-\x{24}\x{27}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
-event EntityOrAttValueSQInner$ = completed <EntityOrAttValueSQInner>
-<EntityOrAttValueSQInner> ::= [\x{9}\x{A}\x{D}\x{20}-\x{24}\x{28}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+event EntityValueDQInner$ = completed <EntityValueDQInner>
+<EntityValueDQInner>      ::= [\x{9}\x{A}\x{D}\x{20}-\x{21}\x{23}-\x{24}\x{27}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+event EntityValueSQInner$ = completed <EntityValueSQInner>
+<EntityValueSQInner>      ::= [\x{9}\x{A}\x{D}\x{20}-\x{24}\x{28}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+event AttValueDQInner$ = completed <AttValueDQInner>
+<AttValueDQInner>         ::= [\x{9}\x{A}\x{D}\x{20}-\x{21}\x{23}-\x{25}\x{27}-\x{3b}\x{3d}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+event AttValueSQInner$ = completed <AttValueSQInner>
+<AttValueSQInner>      ::= [\x{9}\x{A}\x{D}\x{20}-\x{25}\x{28}-\x{3b}\x{3d}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
 event SystemLiteralDQInner$ = completed <SystemLiteralDQInner>
 SystemLiteralDQInner      ::= [\x{9}\x{A}\x{D}\x{20}-\x{21}\x{23}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
 event SystemLiteralSQInner$ = completed <SystemLiteralSQInner>
@@ -848,7 +852,7 @@ event Ignore_Exceptioned$ = completed <Ignore Exceptioned>
 <_CHARDATA UNIT>          ~ [\x{9}\x{A}\x{D}\x{20}-\x{25}\x{26}-\x{3b}\x{3d}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
 <_CHARDATA UNIT ANY>      ~ <_CHARDATA UNIT>*
 <CHARDATA>                ~ <_CHARDATA UNIT ANY>
-<CHARDATA EXCEPTION>      ~ /.*\]\]>/uc  # Faster with a regexp, because it works on an already matches area: <CHARDATA>, so no need to rematch <_CHARDATA UNIT ANY>
+<CHARDATA EXCEPTION>      ~ /.*\]\]>/u  # Faster with a regexp, because it works on an already matched area: <CHARDATA>, so no need to rematch <_CHARDATA UNIT ANY>
 
 :lexeme ::= CHARDATA pause => after event => CHARDATA$ priority => 1
 <CharData Exceptioned>  ::= <CHARDATA> - <CHARDATA EXCEPTION>

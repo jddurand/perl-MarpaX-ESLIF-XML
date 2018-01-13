@@ -295,6 +295,8 @@ sub parse {
     my $result = $valueInterface->getResult;
 
     $log->tracef("XML valuation result:\n%s", $result);
+    use Devel::Peek;
+    Dump($result);
     return $result
 }
 
@@ -308,7 +310,7 @@ sub _manage_events {
     foreach (@{$eslifRecognizer->events()}) {
         my $event = $_->{event};
         my $symbol = $_->{symbol};
-        
+
         if ($log->is_trace) {
             my $input = $eslifRecognizer->input // '';
             $input =~ s/\s/ /g;
@@ -372,7 +374,7 @@ document           ::= prolog element <Misc any>
 event Char$ = completed Char
 Char               ::= [\x{9}\x{A}\x{D}\x{20}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u name => Char
 event S1$ = completed S1
-S1                 ::= [\x{20}\x{9}\x{D}\x{A}]:u
+S1                 ::= [\x{20}\x{9}\x{D}\x{A}]
 event S$ = completed S
 S                  ::= S1+
 event NameStartChar$ = completed NameStartChar
@@ -383,11 +385,11 @@ event Name$ = completed Name
 # Name               ::= NameStartChar <NameChar any>
 Name               ::= <NAME>
 event Names$ = completed Names
-Names              ::= Name+ separator => [\x{20}]:u
+Names              ::= Name+ separator => [\x{20}]
 event Nmtoken$ = completed Nmtoken
 Nmtoken            ::= NameChar+
 event Nmtokens$ = completed Nmtokens
-Nmtokens           ::= Nmtoken+ separator => [\x{20}]:u
+Nmtokens           ::= Nmtoken+ separator => [\x{20}]
 event EntityValue$ = completed EntityValue
 EntityValue        ::= '"' <EntityValue1 any>   '"'
                      | "'" <EntityValue2 any>   "'"
@@ -401,7 +403,7 @@ event PubidLiteral$ = completed PubidLiteral
 PubidLiteral       ::= '"' <PubidChar1 any>     '"'
                      | "'" <PubidChar2 any>     "'"
 event PubidChar$ = completed PubidChar
-PubidChar          ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-'()+,./:=?;!*#@$_%]:u
+PubidChar          ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-'()+,./:=?;!*#@$_%]
 event CharData$ = completed CharData
 CharData           ::= <CharData Exceptioned>
 event Comment$ = completed Comment
@@ -487,7 +489,7 @@ EmptyElemTag       ::= STAG Name <EmptyElemTag1 any> <S maybe> '/>'
 event elementdecl$ = completed elementdecl
 elementdecl        ::= '<!ELEMENT' S Name S contentspec <S maybe> '>'
 event contentspec$ = completed contentspec
-contentspec        ::= 'EMPTY' | 'ANY' | Mixed | children 
+contentspec        ::= 'EMPTY' | 'ANY' | Mixed | children
 event children$ = completed children
 children           ::= <choice or seq> <sequence maybe>
 event cp$ = completed cp
@@ -502,7 +504,7 @@ Mixed              ::= '(' <S maybe> '#PCDATA' <Mixed1 any> <S maybe> ')*'
 event AttlistDecl$ = completed AttlistDecl
 AttlistDecl        ::= '<!ATTLIST' S Name <AttDef any> <S maybe> '>'
 event AttDef$ = completed AttDef
-AttDef             ::= S Name S AttType S DefaultDecl 
+AttDef             ::= S Name S AttType S DefaultDecl
 event AttType$ = completed AttType
 AttType            ::= StringType | TokenizedType | EnumeratedType
 event StringType$ = completed StringType
@@ -570,40 +572,40 @@ EntityDef          ::= EntityValue
                      | ExternalID
                      | ExternalID NDataDecl
 event PEDef$ = completed PEDef
-PEDef              ::= EntityValue | ExternalID 
+PEDef              ::= EntityValue | ExternalID
 event ExternalID$ = completed ExternalID
 ExternalID         ::= 'SYSTEM' S SystemLiteral
                      | 'PUBLIC' S PubidLiteral S SystemLiteral
 event NDataDecl$ = completed NDataDecl
-NDataDecl          ::= S 'NDATA' S Name 
+NDataDecl          ::= S 'NDATA' S Name
 event TextDecl$ = completed TextDecl
 #
 # Note: it is important to split '<?xml' into '<?' 'xml' because of PI whose defintion is: '<?' PITarget
 #
 TextDecl           ::= '<?' 'xml' <VersionInfo maybe> EncodingDecl <S maybe> '?>'
 event extParsedEnt$ = completed extParsedEnt
-extParsedEnt       ::= <TextDecl maybe> content 
+extParsedEnt       ::= <TextDecl maybe> content
 event EncodingDecl$ = completed EncodingDecl
 EncodingDecl       ::= S 'encoding' Eq '"' EncName '"'                               ## Decl_action => ::copy[4]
                      | S 'encoding' Eq "'" EncName "'"                               ## Decl_action => ::copy[4]
 event EncName$ = completed EncName
 EncName            ::= <EncName header> <EncName trailer any>
 event NotationDecl$ = completed NotationDecl
-NotationDecl       ::= '<!NOTATION' S Name S ExternalID <S maybe> '>' 
-                     | '<!NOTATION' S Name S PublicID   <S maybe> '>' 
+NotationDecl       ::= '<!NOTATION' S Name S ExternalID <S maybe> '>'
+                     | '<!NOTATION' S Name S PublicID   <S maybe> '>'
 event PublicID$ = completed PublicID
-PublicID           ::= 'PUBLIC' S PubidLiteral 
+PublicID           ::= 'PUBLIC' S PubidLiteral
 
 event Misc_any$ = completed <Misc any>
 <Misc any>                ::= Misc*
 event NameChar_any$ = completed <NameChar any>
 <NameChar any>            ::= NameChar*
 event EntityValue1$ = completed <EntityValue1>
-<EntityValue1>            ::= [^%&"]:u
+<EntityValue1>            ::= EntityOrAttValueDQInner
                             | PEReference
                             | Reference
 event EntityValue2$ = completed <EntityValue2>
-<EntityValue2>            ::= [^%&']:u
+<EntityValue2>            ::= EntityOrAttValueSQInner
                             | PEReference
                             | Reference
 event EntityValue1_any$ = completed <EntityValue1 any>
@@ -611,19 +613,19 @@ event EntityValue1_any$ = completed <EntityValue1 any>
 event EntityValue2_any$ = completed <EntityValue2 any>
 <EntityValue2 any>        ::= <EntityValue2>*
 event AttValue1$ = completed <AttValue1>
-<AttValue1>               ::= [^<&"]:u
+<AttValue1>               ::= EntityOrAttValueDQInner
                             | Reference
 event AttValue2$ = completed <AttValue2>
-<AttValue2>               ::= [^<&']:u
+<AttValue2>               ::= EntityOrAttValueSQInner
                             | Reference
 event AttValue1_any$ = completed <AttValue1 any>
 <AttValue1 any>           ::= <AttValue1>*
 event AttValue2_any$ = completed <AttValue2 any>
 <AttValue2 any>           ::= <AttValue2>*
 event SystemLiteral1$ = completed <SystemLiteral1>
-<SystemLiteral1>          ::= [^"]:u
+<SystemLiteral1>          ::= SystemLiteralDQInner
 event SystemLiteral2$ = completed <SystemLiteral2>
-<SystemLiteral2>          ::= [^']:u
+<SystemLiteral2>          ::= SystemLiteralSQInner
 event SystemLiteral1_any$ = completed <SystemLiteral1 any>
 <SystemLiteral1 any>      ::= <SystemLiteral1>*
 event SystemLiteral2_any$ = completed <SystemLiteral2 any>
@@ -631,7 +633,7 @@ event SystemLiteral2_any$ = completed <SystemLiteral2 any>
 event PubidChar1_any$ = completed <PubidChar1 any>
 <PubidChar1 any>          ::= PubidChar*
 event PubidChar2$ = completed <PubidChar2>
-<PubidChar2>              ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-()+,./:=?;!*#@$_%]:u  # Same as PubidChar but without '
+<PubidChar2>              ::= [\x{20}\x{D}\x{A}a-zA-Z0-9\-()+,./:=?;!*#@$_%]  # Same as PubidChar but without '
 event PubidChar2_any$ = completed <PubidChar2 any>
 <PubidChar2 any>          ::= <PubidChar2>*
 event XMLDecl_maybe$ = completed <XMLDecl maybe>
@@ -642,16 +644,16 @@ event EncodingDecl_maybe$ = completed <EncodingDecl maybe>
 <EncodingDecl maybe>      ::=
 event SDDecl_maybe$ = completed <SDDecl maybe>
 <SDDecl maybe>            ::= SDDecl
-<SDDecl maybe>            ::= 
+<SDDecl maybe>            ::=
 event S_maybe$ = completed <S maybe>
 <S maybe>                 ::= S
-<S maybe>                 ::= 
+<S maybe>                 ::=
 event digit$ = completed <digit>
-<digit>                   ::= [0-9]:u
+<digit>                   ::= [0-9]
 event digit_many$ = completed <digit many>
 <digit many>              ::= <digit>+
 event hexdigit$ = completed <hexdigit>
-<hexdigit>                ::= [0-9a-fA-F]:u
+<hexdigit>                ::= [0-9a-fA-F]
 event hexdigit_many$ = completed <hexdigit many>
 <hexdigit many>           ::= <hexdigit>+
 event intSubset1$ = completed <intSubset1>
@@ -730,11 +732,23 @@ event TextDecl_maybe$ = completed <TextDecl maybe>
 <TextDecl maybe>          ::= TextDecl
 <TextDecl maybe>          ::=
 event EncName_header$ = completed <EncName header>
-<EncName header>          ::= [A-Za-z]:u
+<EncName header>          ::= [A-Za-z]
 event EncName_trailer$ = completed <EncName trailer>
-<EncName trailer>         ::= [A-Za-z0-9._-]:u
+<EncName trailer>         ::= [A-Za-z0-9._-]
 event EncName_trailer_any$ = completed <EncName trailer any>
 <EncName trailer any>     ::= <EncName trailer>*
+
+#############################
+# Grammar subtilities
+#############################
+event EntityOrAttValueDQInner$ = completed <EntityOrAttValueDQInner>
+<EntityOrAttValueDQInner> ::= [\x{9}\x{A}\x{D}\x{20}-\x{21}\x{23}-\x{24}\x{27}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+event EntityOrAttValueSQInner$ = completed <EntityOrAttValueSQInner>
+<EntityOrAttValueSQInner> ::= [\x{9}\x{A}\x{D}\x{20}-\x{24}\x{28}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+event SystemLiteralDQInner$ = completed <SystemLiteralDQInner>
+SystemLiteralDQInner      ::= [\x{9}\x{A}\x{D}\x{20}-\x{21}\x{23}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
+event SystemLiteralSQInner$ = completed <SystemLiteralSQInner>
+SystemLiteralSQInner      ::= [\x{9}\x{A}\x{D}\x{20}-\x{26}\x{28}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
 
 #############################
 # For element start detection
@@ -786,7 +800,7 @@ event PI_Exceptioned$ = completed <PI Exceptioned>
 # more user-friendly, saying that a PITarget cannot be 'xml':i more explicitly.
 # Since we will use events anyway because of SAX support, we add an explicit
 ## event for PITarget
-<_XML>                     ~ [Xx]:u [Mm]:u [Ll]:u
+<_XML>                     ~ [Xx] [Mm] [Ll]
 event PITarget$ = completed PITarget
 <PITarget>              ::= <_NAME> - <_XML>
 
@@ -802,7 +816,7 @@ event PITarget$ = completed PITarget
 
 #
 # ---------------------------------------
-# CData ::= (Char* - (Char* ']]>' Char*)) 
+# CData ::= (Char* - (Char* ']]>' Char*))
 # ---------------------------------------
 #
 # No need for exception, because ']]>' is longer than Char
@@ -811,7 +825,7 @@ event CData_Exceptioned$ = completed <CData Exceptioned>
 <CData Exceptioned>     ::= Char*
 #
 # ------------------------------------------------
-# Ignore ::= Char+ - (Char+ ('<![' | ']]>') Char+) 
+# Ignore ::= Char+ - (Char+ ('<![' | ']]>') Char+)
 # ------------------------------------------------
 #
 # Note that we made Ignore not nullable.
@@ -831,16 +845,16 @@ event Ignore_Exceptioned$ = completed <Ignore Exceptioned>
 # a character data cannot contain markup characters (nor CDATA section-close delimiter)
 # we raise its priority.
 #
-<_CHARDATA UNIT>          ~ [^<&]:u
+<_CHARDATA UNIT>          ~ [\x{9}\x{A}\x{D}\x{20}-\x{25}\x{26}-\x{3b}\x{3d}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
 <_CHARDATA UNIT ANY>      ~ <_CHARDATA UNIT>*
 <CHARDATA>                ~ <_CHARDATA UNIT ANY>
-<CHARDATA EXCEPTION>      ~ /.*\]\]>/u  # Faster with a regexp, because it works on an already matches area: <CHARDATA>, so no need to rematch <_CHARDATA UNIT ANY>
+<CHARDATA EXCEPTION>      ~ /.*\]\]>/uc  # Faster with a regexp, because it works on an already matches area: <CHARDATA>, so no need to rematch <_CHARDATA UNIT ANY>
 
 :lexeme ::= CHARDATA pause => after event => CHARDATA$ priority => 1
 <CharData Exceptioned>  ::= <CHARDATA> - <CHARDATA EXCEPTION>
 
 #event CharData_Unit$ = completed <CharData Unit>
-#<CharData Unit>         ::= [^<&]:u
+#<CharData Unit>         ::= [^<&]
 #event CharData_Exceptioned$ = completed <CharData Exceptioned>
 #<CharData Exceptioned>  ::= <CharData Unit>+
 #

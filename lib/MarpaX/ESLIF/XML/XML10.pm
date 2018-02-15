@@ -62,6 +62,12 @@ my $DECL_SOURCE   = ":start ::= XMLDecl\n$XML10_SOURCE";
 $DECL_SOURCE      =~ s/## Decl_//g; # Enable specific decl actions
 my $DECL_GRAMMAR  = MarpaX::ESLIF::Grammar->new($ESLIF, $DECL_SOURCE);
 
+#
+# Grammar for element.
+#
+my $ELEMENT_SOURCE   = ":start ::= element\n$XML10_SOURCE";
+my $ELEMENT_GRAMMAR  = MarpaX::ESLIF::Grammar->new($ESLIF, $ELEMENT_SOURCE);
+
 sub new {
     my ($class, %options) = @_;
 
@@ -277,44 +283,75 @@ sub parse {
     #
     # Because of events, we use explicitly the recognizer.
     #
-    $log->tracef('XML parse');
-    if ($eslifRecognizer->scan()) {
-        $self->_manage_events($eslifRecognizer, $recognizerInterface, $encode);
-        while ($eslifRecognizer->isCanContinue) {
-            last unless $eslifRecognizer->resume;
-            $self->_manage_events($eslifRecognizer, $recognizerInterface, $encode);
-        }
-    }
+    my $result = $self->_parse('XML', $eslifRecognizer);
 
-    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
-    $log->tracef('XML valuation');
-    if ($log->is_trace) {
-        $eslifRecognizer->progressLog(-1, -1,MarpaX::ESLIF::Logger::Level->GENERICLOGGER_LOGLEVEL_TRACE);
-    }
-    my $value = MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value();
-    my $result = $valueInterface->getResult;
-
-    $log->tracef("XML valuation result:\n%s", $result);
-    use Devel::Peek;
-    Dump($result);
     return $result
 }
 
-sub _manage_events {
-    my ($self, $eslifRecognizer, $recognizerInterface, $encode) = @_;
+sub _parse {
+    no warnings 'recursion';  # _manage_events() can call _parse() and so on
+    my ($self, $what, $eslifRecognizer) = @_;
+
+    $log->tracef('%s parse', $what);
+
+    if ($eslifRecognizer->scan()) {
+        $self->_manage_events($eslifRecognizer);
+        while ($eslifRecognizer->isCanContinue) {
+            last unless $eslifRecognizer->resume;
+            $self->_manage_events($eslifRecognizer);
+        }
+    }
     #
-    # Remember, events are always sorted like this:
-    # - completion, then
-    # - nullable, then
-    # - prediction
+    # Valuation
+    #
+    #my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
+    #my $value = MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value();
+    #my $result = $valueInterface->getResult;
+    #$log->tracef('%s valuation: %s', $what, $result);
+
+    # return $result;
+}
+
+sub _manage_events {
+    my ($self, $eslifRecognizer) = @_;
+
+    my $events = $eslifRecognizer->events();
+    $log->tracef('Events: %s', $events);
     foreach (@{$eslifRecognizer->events()}) {
+        #
+        # $symbol is undef only when this is the exhaustion event,
+        #
         my $event = $_->{event};
         my $symbol = $_->{symbol};
 
-        if ($log->is_trace) {
-            my $input = $eslifRecognizer->input // '';
-            $input =~ s/\s/ /g;
-            $log->tracef('[%s] Event %s on symbol %s', substr($input, 0, 16), $event, $symbol);
+        if ($event eq '^ELEMENT_START') {
+            #
+            # Add an element recognizer
+            #
+            my $eslifRecognizerElement =  $eslifRecognizer->newFrom($ELEMENT_GRAMMAR);
+            #
+            # Inject the ELEMENT_START lexeme
+            #
+            if (! $eslifRecognizerElement->lexemeRead($symbol, '<', 1)) { # In UTF-8 '<' is one byte
+                croak "lexemeRead of symbol $symbol failure"
+            }
+            #
+            # Allow exhaustion
+            #
+            $eslifRecognizerElement->set_exhausted_flag(1);
+            #
+            # Parse it
+            #
+            # my $result = $self->_parse('element', $eslifRecognizerElement);
+            $self->_parse('element', $eslifRecognizerElement);
+            #
+            # And reinject it
+            #
+            # $log->tracef('Inject: %s', $result);
+            # $eslifRecognizer->lexemeRead('ELEMENT_VALUE', $result, 0); # 0 bytes because this is an inner value
+            $eslifRecognizer->lexemeRead('ELEMENT_VALUE', undef, 0); # 0 bytes because this is an inner value
+        } else {
+            croak "Unmanaged event " . ($event // '<undef>') unless $event eq "'exhausted'"
         }
     }
 }
@@ -473,11 +510,11 @@ extSubsetDecl      ::= <extSubsetDecl1 any>
 # event SDDecl$ = completed SDDecl
 SDDecl             ::= S 'standalone' Eq "'" <yes or no> "'"
                      | S 'standalone' Eq '"' <yes or no> '"'
-event element$ = completed element
 element            ::= EmptyElemTag
                      | STag content ETag
+                     | ELEMENT_VALUE
 # event STag$ = completed STag
-STag               ::= STAG Name <STag1 any> <S maybe> '>'
+STag               ::= ELEMENT_START Name <STag1 any> <S maybe> '>'
 # event Attribute$ = completed Attribute
 Attribute          ::= Name Eq AttValue
 # event ETag$ = completed ETag
@@ -485,7 +522,7 @@ ETag               ::= '</' Name <S maybe> '>'
 # event content$ = completed content
 content            ::= <CharData maybe> <content1 any>
 # event EmptyElemTag$ = completed EmptyElemTag
-EmptyElemTag       ::= STAG Name <EmptyElemTag1 any> <S maybe> '/>'
+EmptyElemTag       ::= ELEMENT_START Name <EmptyElemTag1 any> <S maybe> '/>'
 # event elementdecl$ = completed elementdecl
 elementdecl        ::= '<!ELEMENT' S Name S contentspec <S maybe> '>'
 # event contentspec$ = completed contentspec
@@ -757,8 +794,22 @@ SystemLiteralSQInner      ::= [\x{9}\x{A}\x{D}\x{20}-\x{26}\x{28}-\x{D7FF}\x{E00
 #############################
 # For element start detection
 #############################
-# :lexeme ::= STAG pause => after event => STAG$
-STAG                        ~ '<'
+:lexeme ::= ELEMENT_START pause => before event => ^ELEMENT_START
+ELEMENT_START               ~ '<'
+
+#############################
+# For element end detection
+#############################
+#:lexeme ::= ELEMENT_NOTEMPTY_END pause => before event => ^ELEMENT_NOTEMPTY_END
+#ELEMENT_NOTEMPTY_END        ~ '>'
+#:lexeme ::= ELEMENT_EMPTY_END    pause => before event => ^ELEMENT_EMPTY_END
+#ELEMENT_EMPTY_END           ~ '/>'
+
+#############################
+# For element valuation injected in parent recognizer
+#############################
+ELEMENT_VALUE               ~ [^\s\S]
+
 
 #########
 # Lexemes

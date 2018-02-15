@@ -58,7 +58,7 @@ log4perl.rootLogger                               = TRACE, Screen
 log4perl.appender.Screen                          = Log::Log4perl::Appender::Screen
 log4perl.appender.Screen.stderr                   = 1
 log4perl.appender.Screen.layout                   = PatternLayout
-log4perl.appender.Screen.Threshold                = TRACE
+log4perl.appender.Screen.Threshold                = INFO
 log4perl.appender.Screen.layout.ConversionPattern = %d %-5p %6P %m{chomp}%n
         ';
     Log::Log4perl::init(\$defaultLog4perlConf);
@@ -75,6 +75,8 @@ use open ':std', ':encoding(UTF-8)';
 
 foreach (@ARGV) {
     my $filename = shift;
+    next unless -r $filename;
+    # next if -s $filename > 1024*1024;
     next unless $filename =~ /\.xml$/i;
     $log->infof("Parsing %s", $filename);
     try {

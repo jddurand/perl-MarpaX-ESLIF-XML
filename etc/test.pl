@@ -80,7 +80,7 @@ foreach (@ARGV) {
     next unless $filename =~ /\.xml$/i;
     $log->infof("Parsing %s", $filename);
     try {
-        # $Log::Log4perl::Logger::APPENDER_BY_NAME{'Screen'}->threshold('TRACE');
+        $Log::Log4perl::Logger::APPENDER_BY_NAME{'Screen'}->threshold('TRACE');
         my $reader = MyReader::File->new($filename);
         MarpaX::ESLIF::XML::XML10->new(reader => $reader)->parse;
     } catch {

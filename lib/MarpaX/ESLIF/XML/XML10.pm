@@ -6,7 +6,7 @@ use Carp qw/croak/;
 use Data::Section -setup;
 use I18N::Charset qw/iana_charset_name/;
 use Log::Any '$log', filter => \&_log_filter;
-use MarpaX::ESLIF;
+use MarpaX::ESLIF 2.0.36; # Support of shared streams
 use MarpaX::ESLIF::XML::RecognizerInterface;
 use MarpaX::ESLIF::XML::ValueInterface::BOM;
 use MarpaX::ESLIF::XML::ValueInterface::Decl;
@@ -189,14 +189,25 @@ sub _charset_from_decl {
 # This is the "Raw XML charset encoding detection" as per rometools, extended to UTF-32.
 # C.f. https://rometools.github.io/rome/RssAndAtOMUtilitiEsROMEV0.5AndAboveTutorialsAndArticles/XMLCharsetEncodingDetectionHowRssAndAtOMUtilitiEsROMEHelpsGettingTheRightCharsetEncoding.html
 #
-sub _merge_charsets {
+# I disagree with them nevertheless in the following case:
+#
+# if BOMEnc is NULL
+#   if XMLGuessEnc is NULL or XMLEnc is NULL
+#     encoding is 'UTF-8'                                                                   [1.0]
+#   endif
+# endif
+#
+#
+# Because if XMLEnc is set, it should be used, then XMLGuessEnc, then 'UTF-8.
+#
+ sub _merge_charsets {
     my ($self, $charset_from_bom, $charset_from_guess, $charset_from_decl) = @_;
 
     $log->tracef("Merging encodings from BOM: %s, Guess: %s and Declaration: %s", $charset_from_bom, $charset_from_guess, $charset_from_decl);
     my $charset;
     if (! defined($charset_from_bom)) {
         if (! defined($charset_from_guess) || ! defined($charset_from_decl)) {
-            $charset = 'UTF-8';
+            $charset = $charset_from_decl // $charset_from_guess // 'UTF-8';
         } else {
             if (($charset_from_decl eq 'UTF-16') && ($charset_from_guess eq 'UTF-16BE' || $charset_from_guess eq 'UTF-16LE')) {
                 $charset =  $charset_from_guess;
@@ -386,12 +397,13 @@ BOM ::= [\x{00}] [\x{00}] [\x{FE}] [\x{FF}] action => UTF_32BE
 __[ Guess ]__
 #
 # Unusual ordering is not considered nor EBCDIC with code page
+# Guess encoding should not return UTF-8, there are two many
+# encodings that looks like UTF-8 and will fail later
 #
 Guess ::= [\x{00}] [\x{00}] [\x{00}] [\x{3C}] action => UTF_32BE # '<'
         | [\x{3C}] [\x{00}] [\x{00}] [\x{00}] action => UTF_32LE # '<'
         | [\x{00}] [\x{3C}] [\x{00}] [\x{3F}] action => UTF_16BE # '<?'
         | [\x{3C}] [\x{00}] [\x{3F}] [\x{00}] action => UTF_16LE # '<?'
-        | [\x{3C}] [\x{3F}] [\x{78}] [\x{6D}] action => UTF_8    # '<?x'
 
 __[ XML 1.0 ]__
 #

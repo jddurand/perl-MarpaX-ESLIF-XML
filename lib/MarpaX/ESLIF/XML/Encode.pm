@@ -3,9 +3,9 @@ use warnings FATAL => 'all';
 
 package MarpaX::ESLIF::XML::Encode;
 use Carp qw/croak/;
-use Data::HexDump qw/HexDump/;
+# use Data::HexDump qw/HexDump/;
 use Encode qw/find_encoding/;
-use Log::Any qw/$log/;
+# use Log::Any qw/$log/;
 
 
 # ABSTRACT: Encode helper for MarpaX::ESLIF::XML
@@ -196,7 +196,7 @@ sub from_init {
 
     if (@_) {
         my $octets = shift;
-        $log->tracef("Resetting 'from_init' with %d octets\n%s", bytes::length($octets));
+        # $log->tracef("Resetting 'from_init' with %d octets\n%s", bytes::length($octets));
         return $self->{from_init} = $octets
     } else {
         return $self->{from_init}
@@ -214,7 +214,7 @@ sub to_init {
 
     if (@_) {
         my $octets = shift;
-        $log->tracef("Resetting 'to_init' with %d octets\n%s", bytes::length($octets));
+        # $log->tracef("Resetting 'to_init' with %d octets\n%s", bytes::length($octets));
         return $self->{to_init} = $octets
     } else {
         return $self->{to_init}
@@ -236,17 +236,17 @@ sub from_to {
 
     if ($self->{isCharacterStream}) {
         $self->{decodeBuffer} .= $from_octets;
-        if ($log->is_info) {
-            $log->infof("Input octets in %s charset:\n%s", $self->{from}, HexDump($self->{decodeBuffer}));
-        }
-        $log->info('decode');
+        #if ($log->is_info) {
+        #    $log->infof("Input octets in %s charset:\n%s", $self->{from}, HexDump($self->{decodeBuffer}));
+        #}
+        #$log->info('decode');
         $self->{encodeBuffer} .= $self->{from_enc}->decode($self->{decodeBuffer}, Encode::FB_WARN);
         #if ($log->is_trace) {
         #    $log->tracef("Input octets remaining after %s decode:\n%s", $self->{from}, HexDump($self->{decodeBuffer}));
         #    $log->tracef("Intermediate octets in perl's internal format after %s encode:\n%s", $self->{from}, HexDump($self->{encodeBuffer}));
         #}
 
-        $log->info('encode');
+        #$log->info('encode');
         $to_octets = $self->{to_enc}->encode($self->{encodeBuffer}, Encode::FB_WARN);
         #if ($log->is_trace) {
         #    $log->tracef("Intermediate octets remaining after %s encode:\n%s", $self->{to}, HexDump($self->{encodeBuffer}));

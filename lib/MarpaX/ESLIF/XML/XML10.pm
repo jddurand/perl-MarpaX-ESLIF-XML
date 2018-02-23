@@ -294,9 +294,8 @@ sub parse {
     #
     # Because of events, we use explicitly the recognizer.
     #
-    my $result = $self->_parse('XML', $eslifRecognizer, 0);
-
-    return $result
+    $self->_parse('XML', $eslifRecognizer, 0);
+    return;
 }
 
 sub _parse {
@@ -321,36 +320,31 @@ sub _parse {
     #$log->tracef('%s valuation: %s', $what, $result);
 
     # return $result;
+    return;
 }
 
 sub _manage_events {
     my ($self, $eslifRecognizer, $recursion) = @_;
 
-    my $events = $eslifRecognizer->events();
-    # $log->tracef('Events: %s', $events);
+    # $log->tracef('Events: %s', $eslifRecognizer->events());
     foreach (@{$eslifRecognizer->events()}) {
-        #
-        # $symbol is undef only when this is the exhaustion event,
-        #
-        my $event = $_->{event};
-        my $symbol = $_->{symbol};
 
         # if ($log->is_trace) {
         #     my $input = $eslifRecognizer->input // '';
         #     $input =~ s/\s/ /g;
-        #     $log->tracef('... [%3d] Event %20s [%s]', $recursion, $event, substr($input, 0, 32));
+        #     $log->tracef('... [%3d] Event %20s [%s]', $recursion, $_->{event}, substr($input, 0, 32));
         # }
 
-        if ($event eq '^ELEMENT_START') {
+        if ($_->{event} eq '^ELEMENT_START') {
             #
-            # Add an element recognizer
+            # Add an element recognizer. symbol is ELEMENT_START per def.
             #
             my $eslifRecognizerElement =  $eslifRecognizer->newFrom($ELEMENT_GRAMMAR);
             #
             # Inject the ELEMENT_START lexeme
             #
-            if (! $eslifRecognizerElement->lexemeRead($symbol, '<', 1)) { # In UTF-8 '<' is one byte
-                croak "lexemeRead of symbol $symbol failure"
+            if (! $eslifRecognizerElement->lexemeRead('ELEMENT_START', '<', 1)) { # In UTF-8 '<' is one byte
+                croak "lexemeRead of symbol ELEMENT_START failure"
             }
             #
             # Allow exhaustion
@@ -366,11 +360,16 @@ sub _manage_events {
             #
             # $log->tracef('Inject: %s', $result);
             # $eslifRecognizer->lexemeRead('ELEMENT_VALUE', $result, 0); # 0 bytes because this is an inner value
-            $eslifRecognizer->lexemeRead('ELEMENT_VALUE', undef, 0); # 0 bytes because we are not interested in the value
+            #
+            # undef because we are not interested in the value, 0 bytes because stream is already correctly positioned
+            #
+            $eslifRecognizer->lexemeRead('ELEMENT_VALUE', undef, 0);
         } else {
-            # croak "Unmanaged event " . ($event // '<undef>') unless $event eq "'exhausted'"
+            # croak "Unmanaged event " . ($_->{event} // '<undef>') unless $event eq "'exhausted'"
         }
     }
+
+    return ;
 }
 
 sub CLONE {

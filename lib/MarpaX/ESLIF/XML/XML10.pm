@@ -6,7 +6,7 @@ use Carp qw/croak/;
 use Data::Section -setup;
 use I18N::Charset qw/iana_charset_name/;
 use Log::Any '$log', filter => \&_log_filter;
-use MarpaX::ESLIF 2.0.36; # Support of shared streams
+use MarpaX::ESLIF 2.0.38; # Support of shared streams
 use MarpaX::ESLIF::XML::RecognizerInterface;
 use MarpaX::ESLIF::XML::ValueInterface::BOM;
 use MarpaX::ESLIF::XML::ValueInterface::Decl;
@@ -274,7 +274,7 @@ sub parse {
     #
     # Declaration
     #
-    $encode = MarpaX::ESLIF::XML::Encode->new(from_remember => 1, from_init => $from_init, from => $charset_from_bom // $charset_from_guess);
+    $encode = MarpaX::ESLIF::XML::Encode->new(from_remember => 1, from_init => $from_init);
     ($charset_from_decl, $from_init)  = $self->_charset_from_decl($encode);
     $log->tracef("Encoding from Declaration: %s, bookkeeping: %d bytes", $charset_from_decl, bytes::length($from_init));
     #
@@ -912,6 +912,7 @@ ELEMENT_VALUE               ~ [^\s\S]
 <_CHARDATA UNIT>          ~ [\x{9}\x{A}\x{D}\x{20}-\x{25}\x{26}-\x{3b}\x{3d}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]:u
 <_CHARDATA UNIT ANY>      ~ <_CHARDATA UNIT>*
 <CHARDATA>                ~ <_CHARDATA UNIT ANY>
+#<CHARDATA>                ~ /[\x{9}\x{A}\x{D}\x{20}-\x{25}\x{26}-\x{3b}\x{3d}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]+/u
 <CHARDATA EXCEPTION>      ~ /.*\]\]>/u  # Faster with a regexp, because it works on an already matched area: <CHARDATA>, so no need to rematch <_CHARDATA UNIT ANY>
 
 # :lexeme ::= CHARDATA pause => after event => CHARDATA$ priority => 1

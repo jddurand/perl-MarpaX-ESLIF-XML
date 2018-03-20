@@ -58,7 +58,7 @@ log4perl.rootLogger                               = TRACE, Screen
 log4perl.appender.Screen                          = Log::Log4perl::Appender::Screen
 log4perl.appender.Screen.stderr                   = 1
 log4perl.appender.Screen.layout                   = PatternLayout
-log4perl.appender.Screen.Threshold                = TRACE
+log4perl.appender.Screen.Threshold                = INFO
 log4perl.appender.Screen.layout.ConversionPattern = %d %-5p %6P %m{chomp}%n
         ';
     Log::Log4perl::init(\$defaultLog4perlConf);
@@ -80,7 +80,7 @@ foreach (@ARGV) {
     next unless $filename =~ /\.xml$/i;
     $log->infof("Parsing %s", $filename);
     try {
-        $Log::Log4perl::Logger::APPENDER_BY_NAME{'Screen'}->threshold('TRACE');
+        $Log::Log4perl::Logger::APPENDER_BY_NAME{'Screen'}->threshold('INFO');
         my $reader = MyReader::File->new($filename);
         MarpaX::ESLIF::XML::XML10->new(reader => $reader)->parse;
     } catch {

@@ -292,84 +292,94 @@ sub parse {
     my $recognizerInterface = MarpaX::ESLIF::XML::RecognizerInterface->new(encode => $encode, reader => $self->{reader}, isWithNewline => 1, isCharacterStream => 1);
     my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new($XML10_GRAMMAR, $recognizerInterface);
     #
-    # Because of events, we use explicitly the recognizer.
+    # Scan XML
     #
-    $self->_parse('XML', $eslifRecognizer, 0);
-    return;
+    return $self->_parse($eslifRecognizer, 0);
+    #
+    # Initiate the very first scan
+    #
+    return 0 unless $eslifRecognizer->scan();
+    $log->tracef('... [%3d] isCanContinue: %d, isExhausted: %d', 1, $eslifRecognizer->isCanContinue, $eslifRecognizer->isExhausted);
+    if ($eslifRecognizer->isCanContinue()) {
+        return $self->_events($eslifRecognizer);
+    } else {
+        return 1;
+    }
 }
 
 sub _parse {
-    no warnings 'recursion';  # _manage_events() can call _parse() and so on
-    my ($self, $what, $eslifRecognizer, $recursion) = @_;
+    no warnings 'recursion';
+    my ($self, $currentRecognizer, $level) = @_;
 
-    # $log->tracef('[Recursion level %3d] %s parse', $recursion, $what);
-
-    if ($eslifRecognizer->scan()) {
-        $self->_manage_events($eslifRecognizer, $recursion);
-        while ($eslifRecognizer->isCanContinue) {
-            last unless $eslifRecognizer->resume;
-            $self->_manage_events($eslifRecognizer, $recursion);
-        }
+    $log->tracef('... [%3d] scan', $level);
+    return 0 unless $currentRecognizer->scan();
+    return 0 unless $self->_manage_events($currentRecognizer, $level);
+    $log->tracef('... [%3d] isCanContinue: %d, isExhausted: %d', $level, $currentRecognizer->isCanContinue, $currentRecognizer->isExhausted);
+    if ($currentRecognizer->isCanContinue) {
+        do {
+            $log->tracef('... [%3d] resume', $level);
+            return 0 unless $currentRecognizer->resume;
+            my $rcb = $self->_manage_events($currentRecognizer, $level);
+            return 0 unless $rcb;
+            return 1 if ($rcb < 0);
+            $log->tracef('... [%3d] isCanContinue: %d, isExhausted: %d', $level, $currentRecognizer->isCanContinue, $currentRecognizer->isExhausted);
+        } while ($currentRecognizer->isCanContinue)
     }
-    #
-    # Valuation
-    #
-    #my $valueInterface = MarpaX::ESLIF::XML::ValueInterface->new();
-    #my $value = MarpaX::ESLIF::Value->new($eslifRecognizer, $valueInterface)->value();
-    #my $result = $valueInterface->getResult;
-    #$log->tracef('%s valuation: %s', $what, $result);
 
-    # return $result;
-    return;
+    return 1;
 }
 
 sub _manage_events {
-    my ($self, $eslifRecognizer, $recursion) = @_;
+    my ($self, $currentRecognizer, $level) = @_;
 
-    # $log->tracef('Events: %s', $eslifRecognizer->events());
-    foreach (@{$eslifRecognizer->events()}) {
-
-        # if ($log->is_trace) {
-        #     my $input = $eslifRecognizer->input // '';
-        #     $input =~ s/\s/ /g;
-        #     $log->tracef('... [%3d] Event %20s [%s]', $recursion, $_->{event}, substr($input, 0, 32));
-        # }
-
+    foreach (@{$currentRecognizer->events()}) {
+        
         if ($_->{event} eq '^ELEMENT_START') {
             #
-            # Add an element recognizer. symbol is ELEMENT_START per def.
+            # Create an element recognizer
             #
-            my $eslifRecognizerElement =  $eslifRecognizer->newFrom($ELEMENT_GRAMMAR);
+            $log->tracef('... [%3d] newFrom', $level);
+            my $elementRecognizer = $currentRecognizer->newFrom($ELEMENT_GRAMMAR);
             #
-            # Inject the ELEMENT_START lexeme
+            # Enable element end events
             #
-            if (! $eslifRecognizerElement->lexemeRead('ELEMENT_START', '<', 1)) { # In UTF-8 '<' is one byte
-                croak "lexemeRead of symbol ELEMENT_START failure"
-            }
+            $log->tracef('... [%3d] enable event on "^ELEMENT_END1"\'s element recognizer', $level);
+            $elementRecognizer->eventOnOff('ELEMENT_END1', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_BEFORE ], 1);
+            $log->tracef('... [%3d] enable event on "^ELEMENT_END2"\'s element recognizer', $level);
+            $elementRecognizer->eventOnOff('ELEMENT_END2', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_BEFORE ], 1);
+            #
+            # Inject the ELEMENT_START lexeme.
+            #
+            $log->tracef('... [%3d] lexemeRead ELEMENT_START on element recognizer', $level);
+            return 0 unless $elementRecognizer->lexemeRead('ELEMENT_START', '<', 1); # In UTF-8 '<' is one byte
+            #
+            # Call for the element parsing
+            #
+            return 0 unless $self->_parse($elementRecognizer, $level + 1);
+            #
+            # Push the ELEMENT_VALUE
+            #
+            $log->tracef('... [%3d] lexemeRead ELEMENT_VALUE', $level);
+            return $currentRecognizer->lexemeRead('ELEMENT_VALUE', undef, 0);
+        } elsif ($_->{event} eq '^ELEMENT_END1' || $_->{event} eq '^ELEMENT_END2') {
             #
             # Allow exhaustion
             #
-            $eslifRecognizerElement->set_exhausted_flag(1);
+            $log->tracef('... [%3d] set_exhausted_flag(1)', $level);
+            $currentRecognizer->set_exhausted_flag(1);
             #
-            # Parse it
+            # Push the lexeme
             #
-            # my $result = $self->_parse('element', $eslifRecognizerElement);
-            $self->_parse('element', $eslifRecognizerElement, $recursion + 1);
-            #
-            # And reinject it
-            #
-            # $log->tracef('Inject: %s', $result);
-            # $eslifRecognizer->lexemeRead('ELEMENT_VALUE', $result, 0); # 0 bytes because this is an inner value
-            #
-            # undef because we are not interested in the value, 0 bytes because stream is already correctly positioned
-            #
-            $eslifRecognizer->lexemeRead('ELEMENT_VALUE', undef, 0);
-        } else {
-            # croak "Unmanaged event " . ($_->{event} // '<undef>') unless $event eq "'exhausted'"
+            my $symbol = $_->{symbol};
+            my $utf8Length = $symbol eq 'ELEMENT_END1' ? 1 : 2; # '>' or '/>'
+            $log->tracef('... [%3d] lexemeRead %s', $level, $symbol);
+            return $currentRecognizer->lexemeRead($symbol, undef, $utf8Length);
+        } elsif ($_->{type} == MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_EXHAUSTED) {
+            return -1;
         }
     }
 
-    return ;
+    return 1;
 }
 
 sub CLONE {
@@ -535,11 +545,11 @@ STag               ::= ELEMENT_START Name <STag1 any> <S maybe> '>'
 # event Attribute$ = completed Attribute
 Attribute          ::= Name Eq AttValue
 # event ETag$ = completed ETag
-ETag               ::= '</' Name <S maybe> '>'
+ETag               ::= '</' Name <S maybe> ELEMENT_END1
 # event content$ = completed content
 content            ::= <CharData maybe> <content1 any>
 # event EmptyElemTag$ = completed EmptyElemTag
-EmptyElemTag       ::= ELEMENT_START Name <EmptyElemTag1 any> <S maybe> '/>'
+EmptyElemTag       ::= ELEMENT_START Name <EmptyElemTag1 any> <S maybe> ELEMENT_END2
 # event elementdecl$ = completed elementdecl
 elementdecl        ::= '<!ELEMENT' S Name S contentspec <S maybe> '>'
 # event contentspec$ = completed contentspec
@@ -815,6 +825,15 @@ SystemLiteralSQInner      ::= /[\x{9}\x{A}\x{D}\x{20}-\x{26}\x{28}-\x{D7FF}\x{E0
 ELEMENT_START               ~ '<'
 
 #############################
+# For element end detection
+#############################
+:lexeme ::= ELEMENT_END1 pause => before event => ^ELEMENT_END1=off
+ELEMENT_END1                ~ '>'
+
+:lexeme ::= ELEMENT_END2 pause => before event => ^ELEMENT_END2=off
+ELEMENT_END2                ~ '/>'
+
+#############################
 # For element valuation injected in parent recognizer
 #############################
 ELEMENT_VALUE               ~ [^\s\S]
@@ -863,7 +882,7 @@ ELEMENT_VALUE               ~ [^\s\S]
 # The following is working, but we want this module to be
 # more user-friendly, saying that a PITarget cannot be 'xml':i more explicitly.
 # Since we will use events anyway because of SAX support, we add an explicit
-## event for PITarget
+#event for PITarget
 <_XML>                     ~ [Xx] [Mm] [Ll]
 # event PITarget$ = completed PITarget
 <PITarget>              ::= <_NAME> - <_XML>
@@ -915,7 +934,7 @@ ELEMENT_VALUE               ~ [^\s\S]
 #<CHARDATA>                ~ /[\x{9}\x{A}\x{D}\x{20}-\x{25}\x{26}-\x{3b}\x{3d}-\x{D7FF}\x{E000}-\x{FFFD}\x{10000}-\x{10FFFF}]+/u
 <CHARDATA EXCEPTION>      ~ /.*\]\]>/u  # Faster with a regexp, because it works on an already matched area: <CHARDATA>, so no need to rematch <_CHARDATA UNIT ANY>
 
-# :lexeme ::= CHARDATA pause => after event => CHARDATA$ priority => 1
+:lexeme ::= CHARDATA pause => after event => CharData_Exceptioned$
 <CharData Exceptioned>  ::= <CHARDATA> - <CHARDATA EXCEPTION>
 
 #event CharData_Unit$ = completed <CharData Unit>

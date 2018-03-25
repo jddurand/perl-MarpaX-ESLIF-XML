@@ -1,0 +1,19 @@
+4,5c4,6
+< document ::= prolog element Misc*
+< Char ::= #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+---
+> document ::= ( prolog element Misc* ) - ( Char* RestrictedChar Char* )
+> Char ::= [#x1-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
+> RestrictedChar ::= [#x1-#x8] | [#xB-#xC] | [#xE-#x1F] | [#x7F-#x84] | [#x86-#x9F]
+26c27
+< prolog ::= XMLDecl? Misc* (doctypedecl Misc*)?
+---
+> prolog ::= XMLDecl Misc* (doctypedecl Misc*)?
+30c31
+< VersionNum ::= '1.' [0-9]+
+---
+> VersionNum ::= '1.1'
+78c79
+< extParsedEnt ::= TextDecl? content
+---
+> extParsedEnt ::= ( TextDecl? content ) - ( Char* RestrictedChar Char* )

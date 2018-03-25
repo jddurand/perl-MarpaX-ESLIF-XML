@@ -78,13 +78,14 @@ foreach (@ARGV) {
     next unless -r $filename;
     # next if -s $filename > 1024*1024;
     next unless $filename =~ /\.xml$/i;
+    next unless -s $filename;
     $log->infof("Parsing %s", $filename);
-    try {
+    #try {
         $Log::Log4perl::Logger::APPENDER_BY_NAME{'Screen'}->threshold('INFO');
         my $reader = MyReader::File->new($filename);
         MarpaX::ESLIF::XML::XML10->new(reader => $reader)->parse;
-    } catch {
-        $log->errorf('%s', $_);
-    };
+    #} catch {
+    #    $log->errorf('%s', $_);
+    #};
 }
 

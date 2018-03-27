@@ -1,9 +1,9 @@
 use strict;
 use warnings FATAL => 'all';
 
-package MarpaX::ESLIF::XML::ValueInterface::BOM;
+package MarpaX::ESLIF::XML::Base::Value::Interface;
 
-# ABSTRACT: MarpaX::ESLIF::XML Value Interface for BOM
+# ABSTRACT: MarpaX::ESLIF::XML Value Interface
 
 # VERSION
 
@@ -11,13 +11,13 @@ package MarpaX::ESLIF::XML::ValueInterface::BOM;
 
 =head1 DESCRIPTION
 
-MarpaX::ESLIF::XML's Value Interface for BOM
+MarpaX::ESLIF::XML's Value Interface
 
 =head1 SYNOPSIS
 
-    use MarpaX::ESLIF::XML::ValueInterface::BOM;
+    use MarpaX::ESLIF::XML::Base::Value::Interface;
 
-    my $valueInterface = MarpaX::ESLIF::XML::ValueInterface::BOM->new();
+    my $valueInterface = MarpaX::ESLIF::XML::Base::Value::Interface->new();
 
 =cut
 
@@ -119,60 +119,24 @@ sub setResult {
     return $self->{result} = $_[1]
 }
 
-=head3 UTF_32BE($self)
-
-UTF_32BE action. Returns the array reference [ 'UTF-32BE', 4].
-
-=cut
-
-sub UTF_32BE {
-    return [ 'UTF-32BE', 4 ]
-}
-
-=head3 UTF_32LE($self)
-
-UTF_32LE action. Returns the array reference [ 'UTF-32LE', 4 ].
-
-=cut
-
-sub UTF_32LE {
-    return [ 'UTF-32LE', 4 ]
-}
-
-=head3 UTF_16BE($self)
-
-UTF_16BE action. Returns the array reference [ 'UTF-16BE', 2 ].
-
-=cut
-
-sub UTF_16BE {
-    return [ 'UTF-16BE', 2 ]
-}
-
-=head3 UTF_16LE($self)
-
-UTF_16LE action. Returns the array reference [ 'UTF-16LE', 2 ].
-
-=cut
-
-sub UTF_16LE {
-    return [ 'UTF-16LE', 2 ]
-}
-
-=head3 UTF_8($self)
-
-UTF_8 action. Returns the array reference [ 'UTF-8', 3 ].
-
-=cut
-
-sub UTF_8 {
-    return [ 'UTF-8', 3 ]
-}
-
 =head1 SEE ALSO
 
 L<MarpaX::ESLIF::XML>
 
 =cut
+
+sub defaultRuleAction {
+    my $self = shift;
+
+    my $what = $MarpaX::ESLIF::Context::ruleName // $MarpaX::ESLIF::Context::symbolName;
+    return { $what => \@_ }
+}
+
+sub defaultSymbolAction {
+    my $self = shift;
+
+    my $what = $MarpaX::ESLIF::Context::ruleName // $MarpaX::ESLIF::Context::symbolName;
+    return { $what => \@_ }
+}
 
 1;

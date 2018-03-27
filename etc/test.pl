@@ -30,16 +30,16 @@ sub read {
     return read($self->{fh}, $self->{data}, $BUFLEN);
 }
 
+sub eof {
+    my ($self) = @_;
+
+    return eof($self->{fh})
+}
+
 sub data {
     my ($self) = @_;
 
     return $self->{data}
-}
-
-sub isEof {
-    my ($self) = @_;
-
-    return eof($self->{fh})
 }
 
 package main;
@@ -58,7 +58,7 @@ log4perl.rootLogger                               = TRACE, Screen
 log4perl.appender.Screen                          = Log::Log4perl::Appender::Screen
 log4perl.appender.Screen.stderr                   = 1
 log4perl.appender.Screen.layout                   = PatternLayout
-log4perl.appender.Screen.Threshold                = INFO
+log4perl.appender.Screen.Threshold                = TRACE
 log4perl.appender.Screen.layout.ConversionPattern = %d %-5p %6P %m{chomp}%n
         ';
     Log::Log4perl::init(\$defaultLog4perlConf);
@@ -82,8 +82,7 @@ foreach (@ARGV) {
     $log->infof("Parsing %s", $filename);
     #try {
         $Log::Log4perl::Logger::APPENDER_BY_NAME{'Screen'}->threshold('INFO');
-        my $reader = MyReader::File->new($filename);
-        MarpaX::ESLIF::XML::XML10->new(reader => $reader)->parse;
+        MarpaX::ESLIF::XML::XML10->new(reader => MyReader::File->new($filename))->parse;
     #} catch {
     #    $log->errorf('%s', $_);
     #};

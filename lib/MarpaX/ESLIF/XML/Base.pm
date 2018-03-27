@@ -1,15 +1,25 @@
 use strict;
 use warnings FATAL => 'all';
 
-package MarpaX::ESLIF::XML::XML10;
+package MarpaX::ESLIF::XML::Base;
 use Carp qw/croak/;
-use Class::Tiny qw/reader/;
-use Log::Any qw/$log/;
-use Role::Tiny::With;
+use Class::Tiny qw//, {
+    event_callback  => sub { {} }
+};
+use Data::Section -setup;
+use I18N::Charset qw/iana_charset_name/;
+use Log::Any qw/$log/, filter => \&_log_filter;
+use MarpaX::ESLIF 2.0.42 qw//; # isCanContinue normalization
+use MarpaX::ESLIF::XML::Base::Recognizer::Interface qw//;
+use MarpaX::ESLIF::XML::Base::Value::Interface qw//;
+use MarpaX::ESLIF::XML::Base::Value::Interface::BOM qw//;
+use MarpaX::ESLIF::XML::Base::Value::Interface::Decl qw//;
+use MarpaX::ESLIF::XML::Base::Value::Interface::Guess qw//;
+use Role::Tiny qw/requires/;
 
-with 'MarpaX::ESLIF::XML::Base';
+requires qw/reader decl_grammar document_grammar element_grammar extParsedEnt_grammar/;
 
-# ABSTRACT: XML 1.0 parser
+# ABSTRACT: XML parser role
 
 # VERSION
 
@@ -17,74 +27,497 @@ with 'MarpaX::ESLIF::XML::Base';
 
 =head1 DESCRIPTION
 
-XML 1.0 parser.
+XML parser role. Requires five methods for consumption:
 
-=head1 SYNOPSIS
+=over
 
-    use MarpaX::ESLIF::XML10;
+=item reader
 
-    my $xml10   = MarpaX::ESLIF::XML::XML10->new();
-    my $input   = '<?xml></xml>';
-    my $xmlhash = $eslifxml10->parse($input);
+A method that returns new data, undef when EOF is reached.
+
+=item decl_grammar
+
+A method that returns a MarpaX::ESLIF::Grammar instance of the XMLDecl grammar, i.e.:
+
+  my $decl_grammar = $self->decl_grammar(); # MarpaX::ESLIF::Grammar instance
+
+This grammar must have actions already set up so that its valuation return the encoding part of the XML stream. For example, when applied on a stream that is starting with:
+
+  <?xml version="1.0" encoding="ISO-8859-1"?>
+
+the valuation of the grammar will return the string C<ISO-8859-1>. This grammar will be executed using C<MarpaX::ESLIF::Grammar::parse> method, this mean that no interaction with userspace will be possible. Valuation will return C<undef> if there is no encoding declaration or if the stream parse fails.
+
+=item document_grammar
+
+A method that returns a MarpaX::ESLIF::Grammar instance of the XML grammar starting at document symbol, i.e.:
+
+  my $document_grammar = $self->document_grammar(); # MarpaX::ESLIF::Grammar instance
+
+=item element_grammar
+
+A method that returns a MarpaX::ESLIF::Grammar instance of the XML grammar where the start is an element, i.e.:
+
+  my $element_grammar = $self->element_grammar(); # MarpaX::ESLIF::Grammar instance
+
+This grammar contains the full XML specification like in C<document_grammar>, except that the start symbol is the I<element>. The reasoning behind this additional grammar is that I<element> is the pivot of any XML, which recurses on that symbol.
+
+Although this is technically possible to parse a full XML stream using only C<document_grammar>, memory exhaustion could happen if the stream is very large, because at the very low level, a Marpa parser always remembers at least that some information matched, even without the associated values. In order to be streaming compatible, a new parsing is done at every element node.
+
+=item extParsedEnt_grammar
+
+A method that returns a MarpaX::ESLIF::Grammar instance of the XML grammar starting at extParsedEnt symbol, i.e.:
+
+  my $extParsedEnt_grammar = $self->extParsedEnt_grammar(); # MarpaX::ESLIF::Grammar instance
+
+=item event_callback
+
+A method that will be called everytime the parsing is interruped with an event, with the the following parameters:
+
+=over
+
+=item A reference to an anonymous hash containing:
+
+=over
+
+=item type
+
+The type of an event, guaranteed to be a C<MarpaX::ESLIF::Event::Type> value
+
+=item symbol
+
+The name of the corresponding symbol. Can be C<undef> if this is an exhaustion event.
+
+=item event
+
+The name of the event. Can be the special value C<'exhausted'> if this is an exhaustion event.
+
+=back
+
+=item The instance of the recognizer used at the time of this event.
+
+=back
+
+For example:
+
+  $self->event_callback({type => ..., symbol => ..., event => ...}, $recognizerInstance);
+
+=back
 
 =cut
 
-my $DATA = do { local $/; <DATA> };
+# -----------------
+# Main ESLIF object
+# -----------------
+my $ESLIF = MarpaX::ESLIF->new($log);
+sub eslif {
+    return $ESLIF
+}
+# -----------------------------------------------
+# Grammar for BOM detection using the first bytes
+# -----------------------------------------------
+my $BOM_SOURCE  = ${__PACKAGE__->section_data('BOM')};
+my $BOM_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $BOM_SOURCE);
 
-# ----------------------------------------------------------------------------
-# Main XML 1.0 grammar
-# ----------------------------------------------------------------------------
-my $XML_SOURCE  = $DATA;
+# ------------------------------------------
+# Grammar for encoding guess using the bytes
+# ------------------------------------------
+my $GUESS_SOURCE  = ${__PACKAGE__->section_data('Guess')};
+my $GUESS_GRAMMAR = MarpaX::ESLIF::Grammar->new($ESLIF, $GUESS_SOURCE);
 
-# ----------------------------------------------------------------------------
-# Grammar at document
-# ----------------------------------------------------------------------------
-my $DOCUMENT_SOURCE = ":start ::= document\n$XML_SOURCE";
-my $DOCUMENT_GRAMMAR;
-sub document_grammar {
-    return $DOCUMENT_GRAMMAR //= MarpaX::ESLIF::Grammar->new(__PACKAGE__->eslif, $DOCUMENT_SOURCE)
+# -------------------------------------
+# Shared BNF between all version of XML
+# -------------------------------------
+my $SHARED_SOURCE  = ${__PACKAGE__->section_data('XML')};
+sub shared_source {
+    return $SHARED_SOURCE
 }
 
-# ----------------------------------------------------------------------------
-# Grammar at XMLDecl
-# ----------------------------------------------------------------------------
-my $DECL_SOURCE = ":start ::= XMLDecl\n$XML_SOURCE";
-$DECL_SOURCE      =~ s/## Decl_//g; # Enable specific decl actions
-my $DECL_GRAMMAR;
+# =============================================================================
+# _log_filter
+#
+# Log filtering
+# =============================================================================
+sub _log_filter {
+    my ($category, $level, $msg) = @_;
 
-sub decl_grammar {
-    return $DECL_GRAMMAR //= MarpaX::ESLIF::Grammar->new(__PACKAGE__->eslif, $DECL_SOURCE)
+    return if $MarpaX::ESLIF::XML::Silent;
+    return $msg
 }
 
-# ----------------------------------------------------------------------------
-# Grammar at element
-# ----------------------------------------------------------------------------
-my $ELEMENT_SOURCE = ":start ::= element\n$XML_SOURCE";
-my $ELEMENT_GRAMMAR;
-sub element_grammar {
-    return $ELEMENT_GRAMMAR //= MarpaX::ESLIF::Grammar->new(__PACKAGE__->eslif, $ELEMENT_SOURCE)
+# =============================================================================
+# _iana_charset
+#
+# Returns a hopefully IANA compatible charset name
+# =============================================================================
+sub _iana_charset {
+    my ($self, $origcharset) = @_;
+
+    my $charset;
+    if (defined($origcharset)) {
+        if (lc($origcharset) eq 'unicode') {
+            #
+            # Common pitfall
+            #
+            $log->warnf('Encoding "%s" interpreted as "UTF-16"', $origcharset);
+            $charset = 'UTF-16'
+        } else {
+            #
+            # This should never fail.
+            #
+            $charset = uc(iana_charset_name($origcharset)) ||
+                       croak "Failed to get charset name from $origcharset";
+            #
+            # We always use the uppercased version so that _merge_charsets()
+            # does not have to take care of case sensitivity
+            #
+            $charset = uc($charset)
+        }
+    }
+
+    return $charset
 }
 
-# ----------------------------------------------------------------------------
-# Grammr at extParsedEnt
-# ----------------------------------------------------------------------------
-my $EXTPARSEDENT_SOURCE = ":start ::= extParsedEnt\n$XML_SOURCE";
-my $EXTPARSEDENT_GRAMMAR;
+# =============================================================================
+# _charset_from_bom
+#
+# Get charset from BOM, eventually
+# =============================================================================
+sub _charset_from_bom {
+    my ($self, $recognizerInterface) = @_;
 
-sub extParsedEnt_grammar {
-    return $EXTPARSEDENT_GRAMMAR //= MarpaX::ESLIF::Grammar->new(__PACKAGE__->eslif, $EXTPARSEDENT_SOURCE);
+    local $MarpaX::ESLIF::XML::Silent = 1;
+    my $valueInterface = MarpaX::ESLIF::XML::Base::Value::Interface::BOM->new();
+
+    my ($charset, $bytes);
+    if ($BOM_GRAMMAR->parse($recognizerInterface, $valueInterface)) {
+        #
+        # Values are already IANA compatible and uppercased
+        #
+        ($charset, $bytes) = @{$valueInterface->getResult};
+        #
+        # Get data that has to be reinjected
+        #
+        my $bookkeeping = $recognizerInterface->bookkeeping();
+        #
+        # ... Minus the number of bytes used by the BOM: they are formally NOT
+        # part of the XML grammar
+        #
+        substr($bookkeeping, 0, $bytes, '');
+        $recognizerInterface->bookkeeping($bookkeeping);
+    }
+
+    return $charset
+}
+
+# =============================================================================
+# _charset_from_guess
+#
+# Get charset from first bytes, eventually
+# =============================================================================
+sub _charset_from_guess {
+    my ($self, $recognizerInterface) = @_;
+
+    local $MarpaX::ESLIF::XML::Silent = 1;
+    my $valueInterface = MarpaX::ESLIF::XML::Base::Value::Interface::Guess->new();
+
+    my $charset;
+    if ($GUESS_GRAMMAR->parse($recognizerInterface, $valueInterface)) {
+        #
+        # Values are already IANA compatible and uppercased
+        #
+        $charset = $valueInterface->getResult
+    }
+
+    return $charset
+}
+
+# =============================================================================
+# _charset_from_decl
+#
+# Get charset from XMLDecl, eventually
+# =============================================================================
+sub _charset_from_decl {
+    my ($self, $recognizerInterface) = @_;
+
+    local $MarpaX::ESLIF::XML::Silent = 1;
+    my $valueInterface = MarpaX::ESLIF::XML::Base::Value::Interface::Decl->new();
+
+    my $charset;
+    if ($self->decl_grammar->parse($recognizerInterface, $valueInterface)) {
+        #
+        # In case this is an alias, uppercased IANA version is preferred
+        #
+        $charset = $self->_iana_charset($valueInterface->getResult)
+    }
+
+    return $charset
+}
+
+# =============================================================================
+# This is the "Raw XML charset encoding detection" as per rometools,
+# extended to UTF-32.
+# =============================================================================
+#
+# C.f. https://rometools.github.io/rome/RssAndAtOMUtilitiEsROMEV0.5AndAboveTutorialsAndArticles/XMLCharsetEncodingDetectionHowRssAndAtOMUtilitiEsROMEHelpsGettingTheRightCharsetEncoding.html
+#
+# I disagree with them nevertheless in the following case:
+#
+# if BOMEnc is NULL
+#   if XMLGuessEnc is NULL or XMLEnc is NULL
+#     encoding is 'UTF-8'                                                 [1.0]
+#   endif
+# endif
+#
+#
+# Because if XMLEnc is set, it should be used, then XMLGuessEnc, then 'UTF-8.
+# ======================================================================================
+sub _merge_charsets {
+    my ($self, $charset_from_bom, $charset_from_guess, $charset_from_decl) = @_;
+
+    $log->tracef("Merging encodings from BOM: %s, Guess: %s and Declaration: %s",
+                 $charset_from_bom,
+                 $charset_from_guess,
+                 $charset_from_decl);
+    my $charset;
+    if (! defined($charset_from_bom)) {
+        if (! defined($charset_from_guess) || ! defined($charset_from_decl)) {
+            $charset = $charset_from_decl // $charset_from_guess // 'UTF-8'
+        } else {
+            if (($charset_from_decl eq 'UTF-16') && ($charset_from_guess eq 'UTF-16BE' || $charset_from_guess eq 'UTF-16LE')) {
+                $charset =  $charset_from_guess
+            } elsif (($charset_from_decl eq 'UTF-32') && ($charset_from_guess eq 'UTF-32BE' || $charset_from_guess eq 'UTF-32LE')) {
+                $charset =  $charset_from_guess
+            } else {
+                $charset = $charset_from_decl
+            }
+        }
+    } else {
+        if ($charset_from_bom eq 'UTF-8') {
+            if (defined($charset_from_guess) && $charset_from_guess ne 'UTF-8') {
+                croak "Encoding mismatch between BOM $charset_from_bom and guess $charset_from_guess"
+            }
+            if (defined($charset_from_decl) && $charset_from_decl ne 'UTF-8') {
+                croak "Encoding mismatch between BOM $charset_from_bom and declaration $charset_from_decl"
+            }
+            $charset = 'UTF-8'
+        } else {
+            if ($charset_from_bom eq 'UTF-16BE' or $charset_from_bom eq 'UTF-16LE') {
+                if (defined($charset_from_guess) && $charset_from_guess ne $charset_from_bom) {
+                    croak "Encoding mismatch between BOM $charset_from_bom and guess $charset_from_guess"
+                }
+                if (defined($charset_from_decl) && ($charset_from_decl ne 'UTF-16' and $charset_from_decl ne $charset_from_bom)) {
+                    croak "Encoding mismatch between BOM $charset_from_bom and declaration $charset_from_decl"
+                }
+                $charset = $charset_from_bom
+            } elsif ($charset_from_bom eq 'UTF-32BE' or $charset_from_bom eq 'UTF-32LE') {
+                if (defined($charset_from_guess) && $charset_from_guess ne $charset_from_bom) {
+                    croak "Encoding mismatch between BOM $charset_from_bom and guess $charset_from_guess"
+                }
+                if (defined($charset_from_decl) && ($charset_from_decl ne 'UTF-32' and $charset_from_decl ne $charset_from_bom)) {
+                    croak "Encoding mismatch between BOM $charset_from_bom and declaration $charset_from_decl"
+                }
+                $charset = $charset_from_bom
+            } else {
+                croak 'Encoding setup failed'
+            }
+        }
+    }
+
+    $log->tracef("Charset from merge is: %s", $charset);
+    return $charset
+}
+
+# ======================================================================================
+# Parses XML
+# ======================================================================================
+sub parse {
+    my ($self) = @_;
+
+    # ------------------
+    # Charset from BOM ?
+    # ------------------
+    my $recognizerInterface = MarpaX::ESLIF::XML::Base::Recognizer::Interface->new(
+        isCharacterStream => 0,
+        isWithExhaustion  => 1,
+        reader            => $self->reader,
+        remember          => 1
+        );
+    my $charset_from_bom = $self->_charset_from_bom($recognizerInterface);
+    $log->tracef(
+        "Encoding from BOM: %s, bookkeeping: %d bytes",
+        $charset_from_bom,
+        bytes::length($recognizerInterface->bookkeeping));
+
+    # --------------------
+    # Charset from guess ?
+    # --------------------
+    $recognizerInterface = MarpaX::ESLIF::XML::Base::Recognizer::Interface->new(
+        isWithExhaustion => 1,
+        reader           => $self->reader,
+        remember         => 1,
+        initial_data     => $recognizerInterface->bookkeeping,
+        initial_eof      => $recognizerInterface->isEof
+        );
+    my $charset_from_guess = $self->_charset_from_guess($recognizerInterface);
+    $log->tracef(
+        "Encoding from Guess: %s, bookkeeping: %d bytes",
+        $charset_from_guess,
+        bytes::length($recognizerInterface->bookkeeping));
+
+    # --------------------------
+    # Charset from declaration ?
+    # --------------------------
+    $recognizerInterface = MarpaX::ESLIF::XML::Base::Recognizer::Interface->new(
+        isWithExhaustion => 1,
+        reader           => $self->reader,
+        remember         => 1,
+        initial_data     => $recognizerInterface->bookkeeping,
+        initial_eof      => $recognizerInterface->isEof);
+    my $charset_from_decl = $self->_charset_from_decl($recognizerInterface);
+    $log->tracef(
+        "Encoding from Declaration: %s, bookkeeping: %d bytes",
+        $charset_from_decl,
+        bytes::length($recognizerInterface->bookkeeping));
+
+    # --------------
+    # Merge charsets
+    # --------------
+    my $charset = $self->_merge_charsets(
+        $charset_from_bom,
+        $charset_from_guess,
+        $charset_from_decl);
+    
+    # ----------
+    # XML itself
+    # ----------
+    $recognizerInterface = MarpaX::ESLIF::XML::Base::Recognizer::Interface->new(
+        reader       => $self->reader,
+        initial_data => $recognizerInterface->bookkeeping,
+        initial_eof  => $recognizerInterface->isEof,
+        encoding     => $charset
+        );
+    my $eslifRecognizer = MarpaX::ESLIF::Recognizer->new(
+        $self->document_grammar,
+        $recognizerInterface
+        );
+    #
+    # Scan XML
+    #
+    return $self->_parse(
+        $eslifRecognizer,
+        0 # level
+        )
+}
+
+# ======================================================================================
+# _parse
+#
+# XML parse implementation that recurses on element
+# ======================================================================================
+sub _parse {
+    no warnings 'recursion';
+    my ($self, $currentRecognizer, $level) = @_;
+
+    return 0 unless $currentRecognizer->scan();
+    return 0 unless $self->_manage_events($currentRecognizer, $level);
+    if ($currentRecognizer->isCanContinue) {
+        do {
+            return 0 unless $currentRecognizer->resume;
+            my $rcb = $self->_manage_events($currentRecognizer, $level);
+            return 0 unless $rcb;
+            return 1 if ($rcb < 0)
+        } while ($currentRecognizer->isCanContinue)
+    }
+
+    return 1
+}
+
+# ======================================================================================
+# _manage_events
+#
+# XML events manager. Will pile up as many recognizers as there are composite elements
+# ======================================================================================
+sub _manage_events {
+    my ($self, $currentRecognizer, $level) = @_;
+
+    foreach (@{$currentRecognizer->events()}) {
+        
+        if ($_->{event} eq '^ELEMENT_START') {
+            #
+            # Create an element recognizer
+            #
+            my $elementRecognizer = $currentRecognizer->newFrom($self->element_grammar);
+            #
+            # Enable element end events
+            #
+            $elementRecognizer->eventOnOff('ELEMENT_END1', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_BEFORE ], 1);
+            $elementRecognizer->eventOnOff('ELEMENT_END2', [ MarpaX::ESLIF::Event::Type->MARPAESLIF_EVENTTYPE_BEFORE ], 1);
+            #
+            # Inject the ELEMENT_START lexeme.
+            #
+            return 0 unless $elementRecognizer->lexemeRead('ELEMENT_START', '<', 1); # In UTF-8 '<' is one byte
+            #
+            # Call for the element parsing
+            #
+            return 0 unless $self->_parse($elementRecognizer, $level + 1);
+            #
+            # Push the ELEMENT_VALUE
+            #
+            return $currentRecognizer->lexemeRead('ELEMENT_VALUE', undef, 0)
+        } elsif ($_->{event} eq '^ELEMENT_END1' || $_->{event} eq '^ELEMENT_END2') {
+            #
+            # Allow exhaustion
+            #
+            $currentRecognizer->set_exhausted_flag(1);
+            #
+            # Push the lexeme
+            #
+            my $symbol = $_->{symbol};
+            my $utf8Length = $symbol eq 'ELEMENT_END1' ? 1 : 2; # '>' or '/>'
+            return $currentRecognizer->lexemeRead($symbol, undef, $utf8Length)
+        } else {
+            #
+            # Should never happen
+            #
+            return 0
+        }
+    }
+
+    return 1
 }
 
 1;
 
 __DATA__
+__[ BOM ]__
+#
+# Unusual ordering is not considered
+#
+BOM ::= [\x{00}] [\x{00}] [\x{FE}] [\x{FF}] action => UTF_32BE
+      | [\x{FF}] [\x{FE}] [\x{00}] [\x{00}] action => UTF_32LE
+      | [\x{FE}] [\x{FF}]                   action => UTF_16BE
+      | [\x{FF}] [\x{FE}]                   action => UTF_16LE
+      | [\x{EF}] [\x{BB}] [\x{BF}]          action => UTF_8
+
+__[ Guess ]__
+#
+# Unusual ordering is not considered nor EBCDIC with code page
+# Guess encoding should not return UTF-8, there are two many
+# encodings that looks like UTF-8 and will fail later
+#
+Guess ::= [\x{00}] [\x{00}] [\x{00}] [\x{3C}] action => UTF_32BE # '<'
+        | [\x{3C}] [\x{00}] [\x{00}] [\x{00}] action => UTF_32LE # '<'
+        | [\x{00}] [\x{3C}] [\x{00}] [\x{3F}] action => UTF_16BE # '<?'
+        | [\x{3C}] [\x{00}] [\x{3F}] [\x{00}] action => UTF_16LE # '<?'
+
+__[ XML ]__
 #
 # From https://www.w3.org/TR/REC-xml (5th edition)
 #
-# Take care, "official" grammar has several ambiguities:
-# - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0000
-# - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0001
-# - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0002
+# Take care, original has several ambiguities:
+# - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0000 (applied)
+# - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0001 (applied)
+# - https://lists.w3.org/Archives/Public/xml-editor/2011OctDec/0002 (applied)
 #
 # Note:
 # Concerning XML Exceptions there are three categories:
@@ -94,7 +527,7 @@ __DATA__
 #                     where <exception longer than one character> is always an expected terminal preceeding and/or succeeding <character>* !
 #                     So this mean there is NO needed to write exception...: the grammar will natively stop <character>* parsing as soon
 #                     as it sees <exception longer than one character> in stream, because it is always working in the LATM (Longest Acceptable
-#                     Token Match) mode
+#                     Token Match) mode...
 
 # event document$ = completed document
 document           ::= prolog element <Misc any>

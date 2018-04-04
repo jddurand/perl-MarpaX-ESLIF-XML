@@ -54,11 +54,11 @@ BEGIN {
     # Init log
     #
     our $defaultLog4perlConf = '
-log4perl.rootLogger                               = TRACE, Screen
+log4perl.rootLogger                               = INFO, Screen
 log4perl.appender.Screen                          = Log::Log4perl::Appender::Screen
 log4perl.appender.Screen.stderr                   = 1
 log4perl.appender.Screen.layout                   = PatternLayout
-log4perl.appender.Screen.Threshold                = TRACE
+log4perl.appender.Screen.Threshold                = INFO
 log4perl.appender.Screen.layout.ConversionPattern = %d %-5p %6P %m{chomp}%n
         ';
     Log::Log4perl::init(\$defaultLog4perlConf);
@@ -67,6 +67,7 @@ log4perl.appender.Screen.layout.ConversionPattern = %d %-5p %6P %m{chomp}%n
 
 use MarpaX::ESLIF::XML::XML10;
 use Try::Tiny;
+use IPC::System::Simple qw/capturex/;
 
 #
 # Take care, this can contain UTF-8 stuff
@@ -81,8 +82,18 @@ foreach (@ARGV) {
     next unless -s $filename;
     $log->infof("Parsing %s", $filename);
     #try {
-        $Log::Log4perl::Logger::APPENDER_BY_NAME{'Screen'}->threshold('INFO');
-        MarpaX::ESLIF::XML::XML10->new(reader => MyReader::File->new($filename))->parse;
+        # $Log::Log4perl::Logger::APPENDER_BY_NAME{'Screen'}->threshold('TRACE');
+    my $eslifrc = MarpaX::ESLIF::XML::XML10->new(reader => MyReader::File->new($filename))->parse;
+    undef $@;
+    eval { capturex("xmllint", $filename) };
+    my $xmllintrc = $@ ? 0 : 1;
+        if ($eslifrc && ! $xmllintrc) {
+            print STDERR "************* $filename: ESLIF success but XMLLINT failure\n$@\n";
+        }
+        elsif (! $eslifrc && $xmllintrc) {
+            print STDERR "************* $filename: XMLLINT success but ESLIF failure\n";
+        }
+    last;
     #} catch {
     #    $log->errorf('%s', $_);
     #};
